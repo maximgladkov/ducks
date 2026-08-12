@@ -316,7 +316,9 @@ body {
   gap: var(--hud-gap);
   align-items: stretch;
   height: 100%;
-  padding-top: clamp(20px, 4vh, 36px);
+  /* Sets where the boxes start, which is also what leaves the round label its
+     strip of bar above them — raised along with the label's own gap below. */
+  padding-top: clamp(26px, 5.3vh, 48px);
   box-sizing: border-box;
 }
 
@@ -335,7 +337,7 @@ body {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding-bottom: 4px;
+  padding-bottom: clamp(8px, 1.7vh, 16px);
   z-index: 1;
 }
 
