@@ -1,0 +1,23 @@
+{
+  "name": "duckhunt",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "signalling",
+    "host",
+    "controller"
+  ],
+  "scripts": {
+    "start": "node scripts/start.mjs",
+    "tv": "node scripts/start.mjs",
+    "dev": "npm run dev:local",
+    "dev:local": "npm run build -w shared && concurrently -k -n shared,sig,host,ctrl -c blue,magenta,green,cyan \"npm run dev -w shared\" \"npm run dev -w signalling\" \"npm run dev -w host\" \"npm run dev -w controller\"",
+    "build": "npm run build -w shared && npm run build -w host && VITE_BASE=/c/ npm run build -w controller && npm run build -w signalling",
+    "test": "npm run test -w shared",
+    "start:signalling": "npm run start -w signalling"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.2"
+  }
+}

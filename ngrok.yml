@@ -1,0 +1,5 @@
+version: "3"
+tunnels:
+  gateway:
+    proto: http
+    addr: 8787

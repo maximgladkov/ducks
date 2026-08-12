@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DUCK HUNT</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+      <div id="crosshairs"></div>
+      <div id="overlay">
+        <div id="qr-panel">
+          <div class="nes-label">PLAYER</div>
+          <h1>DUCK HUNT</h1>
+          <p>SCAN TO JOIN ZAPPER</p>
+          <canvas id="qr"></canvas>
+          <div id="join-url"></div>
+          <div id="players"></div>
+          <button id="enable-sound" type="button">ENABLE TV SOUND</button>
+        </div>
+        <div id="calib-banner" class="hidden"></div>
+        <div id="scoreboard" class="hidden"></div>
+      </div>
+      <div id="nes-hud" aria-label="Game status">
+        <div class="hud-inner">
+          <div class="hud-shot-wrap">
+            <div class="hud-round">
+              <img src="/sprites/hud/label_round.png" alt="R=" width="27" height="21" />
+              <img id="hud-round" src="/sprites/hud/digits/g1.png" alt="1" width="15" height="21" />
+            </div>
+            <div class="hud-box hud-shot">
+              <div class="hud-bullets" id="hud-bullets">
+                <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
+                <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
+                <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
+              </div>
+              <img class="hud-caption" src="/sprites/hud/label_shot.png" alt="SHOT" />
+            </div>
+          </div>
+          <div class="hud-box hud-hit">
+            <div class="hud-hit-row">
+              <img class="hud-hit-label" src="/sprites/hud/label_hit.png" alt="HIT" />
+              <div class="hud-ducks" id="hud-ducks">
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+              </div>
+            </div>
+            <div class="hud-bar"><i></i></div>
+          </div>
+          <div class="hud-box hud-score">
+            <div class="hud-score-digits" id="hud-score">
+              <img src="/sprites/hud/digits/0.png" alt="0" />
+              <img src="/sprites/hud/digits/0.png" alt="0" />
+              <img src="/sprites/hud/digits/0.png" alt="0" />
+              <img src="/sprites/hud/digits/0.png" alt="0" />
+              <img src="/sprites/hud/digits/0.png" alt="0" />
+              <img src="/sprites/hud/digits/0.png" alt="0" />
+            </div>
+            <img class="hud-caption" src="/sprites/hud/label_score.png" alt="SCORE" />
+          </div>
+        </div>
+      </div>
+      <div id="debug" class="hidden"></div>
+      <button id="toggle-debug" type="button">DBG</button>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

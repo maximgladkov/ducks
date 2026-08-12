@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>DUCK HUNT ZAPPER</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div class="brand">DUCK HUNT</div>
+      <div id="status">Connecting…</div>
+      <div id="transport"></div>
+      <div id="warn" class="hidden"></div>
+      <button id="enable" type="button">ENABLE MOTION</button>
+      <button id="recentre" type="button" disabled>RECENTRE</button>
+      <button id="trigger" type="button" disabled>FIRE</button>
+      <div id="hint">
+        Hold any grip — keep it for all 4 corners. Calibration detects your axes.
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+node_modules
+dist
+*.local
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+.vite
+coverage
+TV_URL.txt
+.ngrok.log

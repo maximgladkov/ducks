@@ -1,0 +1,73 @@
+{
+  "ducks": {
+    "black": {
+      "diag0": "ducks/black_diag0.png",
+      "diag1": "ducks/black_diag1.png",
+      "diag2": "ducks/black_diag2.png",
+      "horiz0": "ducks/black_horiz0.png",
+      "horiz1": "ducks/black_horiz1.png",
+      "horiz2": "ducks/black_horiz2.png",
+      "hit": "ducks/black_hit.png",
+      "fall0": "ducks/black_fall0.png",
+      "fall1": "ducks/black_fall1.png"
+    },
+    "brown": {
+      "diag0": "ducks/brown_diag0.png",
+      "diag1": "ducks/brown_diag1.png",
+      "diag2": "ducks/brown_diag2.png",
+      "horiz0": "ducks/brown_horiz0.png",
+      "horiz1": "ducks/brown_horiz1.png",
+      "horiz2": "ducks/brown_horiz2.png",
+      "hit": "ducks/brown_hit.png",
+      "fall0": "ducks/brown_fall0.png",
+      "fall1": "ducks/brown_fall1.png"
+    },
+    "blue": {
+      "diag0": "ducks/blue_diag0.png",
+      "diag1": "ducks/blue_diag1.png",
+      "diag2": "ducks/blue_diag2.png",
+      "horiz0": "ducks/blue_horiz0.png",
+      "horiz1": "ducks/blue_horiz1.png",
+      "horiz2": "ducks/blue_horiz2.png",
+      "hit": "ducks/blue_hit.png",
+      "fall0": "ducks/blue_fall0.png",
+      "fall1": "ducks/blue_fall1.png"
+    }
+  },
+  "dog": {
+    "sniff": [
+      "dog/sniff0.png",
+      "dog/sniff1.png",
+      "dog/sniff2.png",
+      "dog/sniff3.png"
+    ],
+    "alert": [
+      "dog/alert0.png"
+    ],
+    "jump": [
+      "dog/jump0.png",
+      "dog/jump1.png"
+    ],
+    "got": [
+      "dog/got0.png",
+      "dog/got1.png",
+      "dog/got2.png"
+    ],
+    "laugh": [
+      "dog/laugh0.png",
+      "dog/laugh1.png"
+    ]
+  },
+  "fx": {
+    "puff": [
+      "fx/puff0.png",
+      "fx/puff1.png",
+      "fx/puff2.png",
+      "fx/puff3.png",
+      "fx/puff4.png",
+      "fx/puff5.png",
+      "fx/puff6.png",
+      "fx/puff7.png"
+    ]
+  }
+}
