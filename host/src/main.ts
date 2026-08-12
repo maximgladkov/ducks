@@ -1,13 +1,14 @@
 import QRCode from "qrcode";
 import {
   averageVec2,
-  calibrationCorners,
   type DebugSettings,
   type SignallingMessage,
   type Vec2,
 } from "@duckhunt/shared";
 import {
   beginCalibration,
+  calibTargets,
+  CALIB_POINT_COUNT,
   createPlayer,
   finishCalibration,
   handlePlayerEvent,
@@ -180,21 +181,18 @@ function setCalibBanner(text: string | null): void {
 }
 
 function showCalibCorner(seq: number): void {
-  const [w, h] = screenSize();
-  const corners = calibrationCorners(w, h);
-  const c = corners[seq];
+  const c = calibTargets(screenSize())[seq];
   if (!c) return;
   if (!calibMarker) {
     calibMarker = document.createElement("div");
     calibMarker.className = "calib-target";
     document.getElementById("overlay")!.appendChild(calibMarker);
   }
-  const [cx, cy] = [c[0], c[1]];
-  calibMarker.style.left = `${cx}px`;
-  calibMarker.style.top = `${cy}px`;
+  calibMarker.style.left = `${c[0]}px`;
+  calibMarker.style.top = `${c[1]}px`;
   calibMarker.classList.remove("hidden");
   setCalibBanner(
-    `Corner ${seq + 1}/4 — same grip the whole time; aim at target, hold still, trigger`,
+    `Target ${seq + 1}/${CALIB_POINT_COUNT} — same grip the whole time; aim, hold still, trigger`,
   );
 }
 
@@ -262,12 +260,13 @@ function startCalibration(playerId: string): void {
   showCalibCorner(0);
   peer.send({
     type: "status",
-    text: "Hold phone however you like — keep that grip for all 4 corners",
+    text: `Hold phone however you like — keep that grip for all ${CALIB_POINT_COUNT} targets`,
   });
   peer.send({
     type: "calib_prompt",
     seq: 0,
-    corner: calibrationCorners(...screenSize())[0]!,
+    total: CALIB_POINT_COUNT,
+    corner: calibTargets(screenSize())[0]!,
   });
 }
 
@@ -316,32 +315,30 @@ function completeCalibCapture(p: PlayerRuntime): void {
   const n = p.calibQuats.length;
   peer.send({
     type: "status",
-    text: `Corner ${n}/4 locked (${((angleSpread * 180) / Math.PI).toFixed(1)}°)`,
+    text: `Target ${n}/${CALIB_POINT_COUNT} locked (${((angleSpread * 180) / Math.PI).toFixed(1)}°)`,
   });
-  if (n < 4) {
+  if (n < CALIB_POINT_COUNT) {
     showCalibCorner(n);
     peer.send({
       type: "calib_prompt",
       seq: n,
-      corner: calibrationCorners(...screenSize())[n]!,
+      total: CALIB_POINT_COUNT,
+      corner: calibTargets(screenSize())[n]!,
     });
     return;
   }
   const result = finishCalibration(p, screenSize());
   hideCalibCorner();
   calibratingPlayerId = null;
-  peer.send({
-    type: "calib_done",
-    ok: result.ok,
-    reason: result.ok
-      ? `OK · ${result.gripLabel} · residual ${(result.maxError * 100).toFixed(1)}%`
-      : result.reason,
-  });
+  const summary = result.ok
+    ? `OK · ${result.gripLabel} · accuracy ±${result.errorPx.toFixed(0)}px`
+    : result.reason;
+  peer.send({ type: "calib_done", ok: result.ok, reason: summary });
   peer.send({ type: "ammo", shots: p.shots });
   syncHudShotsFrom(p.id);
   setCalibBanner(
     result.ok
-      ? `Calibration OK · grip: ${result.gripLabel} · residual ${(result.maxError * 100).toFixed(1)}%`
+      ? `Calibration OK · grip: ${result.gripLabel} · held-out accuracy ±${result.errorPx.toFixed(0)}px`
       : result.reason ?? "Calibration failed",
   );
   window.setTimeout(() => setCalibBanner(null), 5000);
@@ -357,14 +354,17 @@ function buildDebugHud(): void {
   debugEl.innerHTML = `
     <h2>Debug HUD</h2>
     <div id="dbg-stats"></div>
-    <label>minCutoff <span id="v-minCutoff"></span>
-      <input id="minCutoff" type="range" min="0.1" max="10" step="0.1" />
+    <label>minCutoff Hz (hold steadiness) <span id="v-minCutoff"></span>
+      <input id="minCutoff" type="range" min="0.2" max="8" step="0.1" />
     </label>
-    <label>beta <span id="v-beta"></span>
-      <input id="beta" type="range" min="0" max="0.1" step="0.001" />
+    <label>beta Hz per deg/s (flick responsiveness) <span id="v-beta"></span>
+      <input id="beta" type="range" min="0" max="0.3" step="0.005" />
     </label>
     <label>prediction horizon ms <span id="v-predictionHorizonMs"></span>
       <input id="predictionHorizonMs" type="range" min="0" max="120" step="1" />
+    </label>
+    <label>filter lead (lag cancellation) <span id="v-filterLeadGain"></span>
+      <input id="filterLeadGain" type="range" min="0" max="1.5" step="0.05" />
     </label>
     <label>aim assist radius <span id="v-aimAssistRadius"></span>
       <input id="aimAssistRadius" type="range" min="0" max="80" step="1" />
@@ -400,6 +400,7 @@ function buildDebugHud(): void {
   bindRange("minCutoff");
   bindRange("beta");
   bindRange("predictionHorizonMs");
+  bindRange("filterLeadGain");
   bindRange("aimAssistRadius");
   bindRange("sensitivity");
 
@@ -453,10 +454,11 @@ function updateDebugStats(): void {
   if (calibratingPlayerId) {
     const p = players.get(calibratingPlayerId);
     const seq = p?.calibRays.length ?? 0;
-    const corner = calibrationCorners(...screenSize())[Math.min(seq, 3)]!;
+    const targets = calibTargets(screenSize());
+    const target = targets[Math.min(seq, targets.length - 1)]!;
     if (p) {
-      const err = Math.hypot(p.aim[0] - corner[0], p.aim[1] - corner[1]);
-      calibLine = `<div>calib corner ${seq + 1}/4 · crosshair error ${err.toFixed(0)}px · capture ${calibCapture?.samples.length ?? 0}</div>`;
+      const err = Math.hypot(p.aim[0] - target[0], p.aim[1] - target[1]);
+      calibLine = `<div>calib target ${seq + 1}/${CALIB_POINT_COUNT} · crosshair error ${err.toFixed(0)}px · capture ${calibCapture?.samples.length ?? 0}</div>`;
     }
   } else {
     const p0 = [...players.values()][0];

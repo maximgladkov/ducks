@@ -9,6 +9,7 @@ import {
 
 const statusEl = document.getElementById("status")!;
 const transportEl = document.getElementById("transport")!;
+const sensorEl = document.getElementById("sensors")!;
 const warnEl = document.getElementById("warn")!;
 const enableBtn = document.getElementById("enable") as HTMLButtonElement;
 const recentreBtn = document.getElementById("recentre") as HTMLButtonElement;
@@ -50,7 +51,7 @@ const session = new ControllerSession(sendStub, {
   },
   onHostMessage: (msg) => {
     if (msg.type === "calib_prompt") {
-      setStatus(`Calibrate corner ${msg.seq + 1}/4`);
+      setStatus(`Calibrate target ${msg.seq + 1}/${msg.total}`);
     }
     if (msg.type === "calib_done") {
       setStatus(msg.ok ? "Calibration OK — aim and shoot" : msg.reason ?? "Calib failed");
@@ -114,6 +115,17 @@ const motion = new MotionPipeline({
     transportEl.textContent = `${transportEl.textContent.split(" · ")[0]} · sensors: ${mode}`;
   },
 });
+
+// Gyro bias only settles while the phone is held still, so surfacing it makes an
+// otherwise invisible part of aim quality debuggable from the phone itself.
+window.setInterval(() => {
+  if (!motionEnabled) return;
+  const d = motion.getDiagnostics();
+  const sign = d.accelSign === 0 ? "?" : d.accelSign > 0 ? "spec" : "inverted";
+  sensorEl.textContent = `${d.mode} · bias ${d.biasDegPerSec.toFixed(2)}°/s · ${
+    d.stationary ? "still" : "moving"
+  } · accel ${sign}`;
+}, 500);
 
 enableBtn.addEventListener("click", async () => {
   sfx.unlock();
@@ -180,11 +192,16 @@ document.addEventListener(
   { passive: false },
 );
 
+// Screen rotation is compensated for in the sample stream, so calibration stays
+// valid; it is only worth mentioning when the platform will not tell us the angle.
 window.addEventListener("orientationchange", () => {
   const next = screen.orientation?.type ?? "unknown";
-  if (next !== lockedOrientation) {
+  if (next === lockedOrientation) return;
+  lockedOrientation = next;
+  if (screen.orientation?.angle == null && window.orientation == null) {
     setWarn("Orientation changed — recalibrate on host");
-    lockedOrientation = next;
+  } else {
+    setWarn(null);
   }
 });
 

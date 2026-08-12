@@ -3,26 +3,29 @@ import {
   DEFAULT_DEBUG_SETTINGS,
   OneEuroFilter2D,
   aimAssistPull,
+  anglesDegToPlane,
   applyHomography,
   applyReferenceFrame,
-  averageVec2,
-  calibrationCorners,
+  calibrationPoints,
   clampAim,
   colorForPlayer,
+  crossValidateHomography,
   detectAimBasis,
   hitscan,
+  solveHomography,
+  homographyJacobian,
   hostTimeFromController,
-  lerp2,
+  lerp,
   orientationToPlane,
+  planeToAnglesDeg,
   predictOrientationSafe,
   quatConjugate,
   quatIdentity,
   quatMultiply,
   quatNormalize,
+  quatSlerp,
   referenceFrameForRecentre,
-  relativeAimDelta,
   sampleAgeMs,
-  spreadVec2,
   type AimBasis,
   type ControllerEvent,
   type ControllerSample,
@@ -93,9 +96,13 @@ export type PlayerRuntime = {
   ghostPred: HTMLDivElement;
 };
 
+// Bumped from v4: filter parameters moved from pixels to degrees of aim angle,
+// so previously stored values mean something entirely different now.
+const SETTINGS_KEY = "duckhunt.debug.v5";
+
 export function loadSettings(): DebugSettings {
   try {
-    const raw = localStorage.getItem("duckhunt.debug.v4");
+    const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return { ...DEFAULT_DEBUG_SETTINGS, invertX: false, invertY: false };
     return {
       ...DEFAULT_DEBUG_SETTINGS,
@@ -109,7 +116,7 @@ export function loadSettings(): DebugSettings {
 }
 
 export function saveSettings(s: DebugSettings): void {
-  localStorage.setItem("duckhunt.debug.v4", JSON.stringify(s));
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
 }
 
 export function createPlayer(
@@ -208,15 +215,37 @@ export function ingestSample(p: PlayerRuntime, sample: ControllerSample, setting
     p.filter.reset();
   }
   if (!settings.absoluteAiming && p.lastSample) {
-    const q0 = applyReferenceFrame(p.lastSample.q, p.refInverse);
-    const q1 = applyReferenceFrame(sample.q, p.refInverse);
-    const d = relativeAimDelta(q0, q1, settings.sensitivity, p.aimBasis);
-    const sx = settings.invertX ? -1 : 1;
-    const sy = settings.invertY ? -1 : 1;
-    p.relativePos = [
-      p.relativePos[0] + d.dx * sx,
-      p.relativePos[1] + d.dy * sy,
-    ];
+    const from = orientationToPlane(
+      applyReferenceFrame(p.lastSample.q, p.refInverse),
+      p.aimBasis,
+    );
+    const to = orientationToPlane(
+      applyReferenceFrame(sample.q, p.refInverse),
+      p.aimBasis,
+    );
+    if (from && to) {
+      const dx = to[0] - from[0];
+      const dy = to[1] - from[1];
+      // Converting the plane delta through the calibration Jacobian makes
+      // relative mode inherit the axis orientation and scale that calibration
+      // already established, instead of guessing them separately.
+      let stepX: number;
+      let stepY: number;
+      if (p.homography) {
+        const [dudx, dudy, dvdx, dvdy] = homographyJacobian(p.homography, from);
+        stepX = dudx * dx + dudy * dy;
+        stepY = dvdx * dx + dvdy * dy;
+      } else {
+        stepX = dx * settings.sensitivity;
+        stepY = dy * settings.sensitivity;
+      }
+      const sx = settings.invertX ? -1 : 1;
+      const sy = settings.invertY ? -1 : 1;
+      p.relativePos = [
+        p.relativePos[0] + stepX * sx,
+        p.relativePos[1] + stepY * sy,
+      ];
+    }
   }
   p.prevSample = p.lastSample;
   p.lastSample = sample;
@@ -274,59 +303,75 @@ export function handlePlayerEvent(
   return { hitId: null, miss: false };
 }
 
-export function mapOrientationToScreen(
+/**
+ * Resolves the orientation to show this frame.
+ *
+ * Samples arrive at their own rate, so the two most recent are interpolated with
+ * slerp to the current display time. Extrapolating past the newest sample is
+ * left to the gyroscope-driven prediction step, which knows the actual angular
+ * velocity, rather than to the interpolator.
+ */
+function orientationForNow(
   p: PlayerRuntime,
-  sample: ControllerSample,
   settings: DebugSettings,
-  screen: Vec2,
   predictMs: number,
-): { raw: Vec2; predicted: Vec2 } {
-  const age = sampleAgeMs(sample.t, p.clockOffset, performance.now());
-  p.sampleAge = age;
-  const horizon = settings.predictionEnabled ? (age + predictMs) / 1000 : 0;
-  const qBase = applyReferenceFrame(sample.q, p.refInverse);
-  const qPredWorld = settings.predictionEnabled
-    ? predictOrientationSafe(sample.q, sample.w, horizon)
-    : sample.q;
-  const qPred = applyReferenceFrame(qPredWorld, p.refInverse);
+): { base: Quat; predicted: Quat } | null {
+  const sample = p.lastSample;
+  if (!sample) return null;
 
-  if (!settings.absoluteAiming) {
-    return {
-      raw: [...p.relativePos] as Vec2,
-      predicted: [...p.relativePos] as Vec2,
-    };
+  const hostNow = performance.now();
+  p.sampleAge = sampleAgeMs(sample.t, p.clockOffset, hostNow);
+
+  let q = sample.q;
+  let w = sample.w;
+  if (p.prevSample) {
+    const span = Math.max(1, sample.t - p.prevSample.t);
+    const alpha = Math.min(
+      1,
+      Math.max(0, (hostNow - hostTimeFromController(p.prevSample.t, p.clockOffset)) / span),
+    );
+    q = quatSlerp(p.prevSample.q, sample.q, alpha);
+    w = [
+      lerp(p.prevSample.w[0], sample.w[0], alpha),
+      lerp(p.prevSample.w[1], sample.w[1], alpha),
+      lerp(p.prevSample.w[2], sample.w[2], alpha),
+    ];
   }
 
-  p.prevQ = qBase;
-  const raw = project(qBase, p, screen, settings);
-  const predicted = project(qPred, p, screen, settings);
-  return { raw, predicted };
+  const base = applyReferenceFrame(q, p.refInverse);
+  if (!settings.predictionEnabled) return { base, predicted: base };
+
+  const horizon = (Math.max(0, p.sampleAge) + predictMs) / 1000;
+  return {
+    base,
+    predicted: applyReferenceFrame(
+      predictOrientationSafe(q, w, horizon),
+      p.refInverse,
+    ),
+  };
 }
 
-function project(
-  q: Quat,
+function planeToScreen(
+  plane: Vec2,
   p: PlayerRuntime,
   screen: Vec2,
   settings: DebugSettings,
 ): Vec2 {
-  const plane = orientationToPlane(q, p.aimBasis);
-  if (!plane) return [...p.aim] as Vec2;
-  const clampedPlane: Vec2 = [
+  const bounded: Vec2 = [
     Math.max(-3, Math.min(3, plane[0])),
     Math.max(-3, Math.min(3, plane[1])),
   ];
   let mapped: Vec2;
   if (p.homography) {
-    mapped = applyHomography(p.homography, clampedPlane);
+    mapped = applyHomography(p.homography, bounded);
   } else {
-    const cx = screen[0] / 2;
-    const cy = screen[1] / 2;
     const scale = Math.min(screen[0], screen[1]) * 0.55;
-    mapped = [cx + clampedPlane[0] * scale, cy + clampedPlane[1] * scale];
+    mapped = [screen[0] / 2 + bounded[0] * scale, screen[1] / 2 + bounded[1] * scale];
   }
-  const x = settings.invertX ? screen[0] - mapped[0] : mapped[0];
-  const y = settings.invertY ? screen[1] - mapped[1] : mapped[1];
-  return [x, y];
+  return [
+    settings.invertX ? screen[0] - mapped[0] : mapped[0],
+    settings.invertY ? screen[1] - mapped[1] : mapped[1],
+  ];
 }
 
 export function updatePlayerFrame(
@@ -339,54 +384,67 @@ export function updatePlayerFrame(
 ): void {
   p.filter.setParams({ minCutoff: settings.minCutoff, beta: settings.beta });
 
-  if (!p.lastSample) return;
-
-  const mapped = mapOrientationToScreen(
+  const oriented = orientationForNow(
     p,
-    p.lastSample,
     settings,
-    screen,
     settings.predictionHorizonMs + 1000 / 60,
   );
+  if (!oriented) return;
+  p.prevQ = oriented.base;
 
-  let raw = mapped.raw;
-  let predicted = mapped.predicted;
-
-  if (p.prevSample && p.lastSample) {
-    const t0 = p.prevSample.t;
-    const t1 = p.lastSample.t;
-    const span = Math.max(1, t1 - t0);
-    const hostNow = performance.now();
-    const hostOfT0 = hostTimeFromController(t0, p.clockOffset);
-    const alpha = Math.min(1, Math.max(0, (hostNow - hostOfT0) / span));
-    const mappedPrev = mapOrientationToScreen(
-      p,
-      p.prevSample,
-      settings,
-      screen,
-      settings.predictionHorizonMs,
-    );
-    raw = lerp2(mappedPrev.raw, mapped.raw, alpha);
-    predicted = lerp2(mappedPrev.predicted, mapped.predicted, alpha);
+  if (!settings.absoluteAiming) {
+    p.raw = [...p.relativePos] as Vec2;
+    p.predicted = p.raw;
+    p.filtered = p.raw;
+    finishFrame(p, p.raw, settings, screen, targets, dt, showGhosts);
+    return;
   }
 
-  p.raw = raw;
-  p.predicted = predicted;
+  const rawPlane = orientationToPlane(oriented.base, p.aimBasis);
+  const predictedPlane = orientationToPlane(oriented.predicted, p.aimBasis);
+  if (!rawPlane || !predictedPlane) return;
 
-  let filtered = settings.filteringEnabled
-    ? p.filter.filter(predicted[0], predicted[1], performance.now() / 1000)
-    : predicted;
-  p.filtered = filtered;
+  p.raw = planeToScreen(rawPlane, p, screen, settings);
+  p.predicted = planeToScreen(predictedPlane, p, screen, settings);
 
+  // Smoothing happens in degrees of aim angle rather than pixels. Pixels are
+  // stretched unevenly by the homography, which would make the crosshair damp
+  // differently at the edges than in the middle.
+  let aimPlane = predictedPlane;
+  if (settings.filteringEnabled) {
+    const angles = planeToAnglesDeg(predictedPlane);
+    const smoothed = p.filter.filterWithLead(
+      angles[0],
+      angles[1],
+      performance.now() / 1000,
+      settings.filterLeadGain,
+    );
+    aimPlane = anglesDegToPlane(smoothed);
+  }
+
+  p.filtered = planeToScreen(aimPlane, p, screen, settings);
+  finishFrame(p, p.filtered, settings, screen, targets, dt, showGhosts);
+}
+
+function finishFrame(
+  p: PlayerRuntime,
+  point: Vec2,
+  settings: DebugSettings,
+  screen: Vec2,
+  targets: Target[],
+  dt: number,
+  showGhosts: boolean,
+): void {
+  let aim = point;
   if (settings.aimAssistEnabled) {
-    filtered = aimAssistPull(
-      filtered,
+    aim = aimAssistPull(
+      aim,
       targets.map((t) => ({ x: t.x, y: t.y, radius: t.radius })),
       settings.aimAssistRadius,
     );
   }
 
-  const clamped = clampAim(filtered[0], filtered[1], screen[0], screen[1]);
+  const clamped = clampAim(aim[0], aim[1], screen[0], screen[1]);
   p.aim = [clamped.x, clamped.y];
   p.clamped = clamped.clamped;
   p.edge = [clamped.nx, clamped.ny];
@@ -482,33 +540,62 @@ export function recordCalibCorner(
   p.calibRays.push(plane);
 }
 
+export const CALIB_POINT_COUNT = 9;
+
+/** Worst tolerated leave-one-out aim error, as a fraction of screen diagonal. */
+const CALIB_MAX_ERROR_FRACTION = 0.035;
+
+export function calibTargets(screen: Vec2): Vec2[] {
+  return calibrationPoints(screen[0], screen[1]);
+}
+
 export function finishCalibration(
   p: PlayerRuntime,
   screen: Vec2,
-): { ok: boolean; reason?: string; maxError: number; gripLabel?: string } {
-  const corners = calibrationCorners(screen[0], screen[1]);
-  if (p.calibQuats.length < 4) {
-    return { ok: false, reason: "Need 4 corners", maxError: 1 };
+): {
+  ok: boolean;
+  reason?: string;
+  /** Leave-one-out aim error in pixels. */
+  errorPx: number;
+  worstIndex: number;
+  gripLabel?: string;
+} {
+  const targets = calibTargets(screen);
+  if (p.calibQuats.length < CALIB_POINT_COUNT) {
+    return {
+      ok: false,
+      reason: `Need ${CALIB_POINT_COUNT} points`,
+      errorPx: Infinity,
+      worstIndex: p.calibQuats.length,
+    };
   }
-  const fit = detectAimBasis(p.calibQuats.slice(0, 4), corners, screen);
+
+  const used = targets.slice(0, p.calibQuats.length);
+  const fit = detectAimBasis(p.calibQuats, used);
   if (!fit) {
     p.calibRays = [];
     p.calibQuats = [];
     return {
       ok: false,
-      reason: "Could not detect grip — hold one consistent pose and redo",
-      maxError: 1,
+      reason: "Could not fit a mapping — hold one consistent grip and redo",
+      errorPx: Infinity,
+      worstIndex: 0,
     };
   }
-  if (fit.maxError > 0.05) {
+
+  const worstIndex = worstCalibPoint(p, fit.basis, used);
+  const limit = Math.hypot(screen[0], screen[1]) * CALIB_MAX_ERROR_FRACTION;
+  if (fit.maxError > limit) {
     p.calibRays = [];
     p.calibQuats = [];
     return {
       ok: false,
-      reason: `Bad mapping (${(fit.maxError * 100).toFixed(1)}% error) — redo`,
-      maxError: fit.maxError,
+      reason: `Aim was inconsistent (off by ${fit.maxError.toFixed(0)}px at target ${worstIndex + 1}) — redo`,
+      errorPx: fit.maxError,
+      worstIndex,
     };
   }
+
   p.aimBasis = fit.basis;
   p.gripLabel = fit.basis.label;
   p.homography = fit.H;
@@ -516,9 +603,36 @@ export function finishCalibration(
   p.filter.reset();
   return {
     ok: true,
-    maxError: fit.maxError,
+    errorPx: fit.maxError,
+    worstIndex,
     gripLabel: fit.basis.label,
   };
+}
+
+function worstCalibPoint(
+  p: PlayerRuntime,
+  basis: AimBasis,
+  targets: Vec2[],
+): number {
+  const planes = p.calibQuats.map((q) => orientationToPlane(q, basis));
+  if (planes.some((plane) => !plane)) return 0;
+  const cv = crossValidateHomography(planes as Vec2[], targets);
+  if (!cv) return 0;
+  let worst = 0;
+  let worstErr = -1;
+  for (let i = 0; i < targets.length; i++) {
+    const trainSrc = (planes as Vec2[]).filter((_, j) => j !== i);
+    const trainDst = targets.filter((_, j) => j !== i);
+    const H = solveHomography(trainSrc, trainDst);
+    if (!H) continue;
+    const mapped = applyHomography(H, (planes as Vec2[])[i]!);
+    const err = Math.hypot(mapped[0] - targets[i]![0], mapped[1] - targets[i]![1]);
+    if (err > worstErr) {
+      worstErr = err;
+      worst = i;
+    }
+  }
+  return worst;
 }
 
 export function spawnMovingTarget(

@@ -1,86 +1,88 @@
+import { Matrix, SingularValueDecomposition, inverse } from "ml-matrix";
 import type { Mat3, Vec2 } from "./types.js";
 
+/**
+ * Least-squares homography from N >= 4 correspondences via the normalized DLT.
+ *
+ * Hartley normalization matters here because the source points are gnomonic
+ * plane coordinates clustered near the origin while the destinations span
+ * thousands of pixels; solving the raw system is badly conditioned.
+ */
 export function solveHomography(src: Vec2[], dst: Vec2[]): Mat3 | null {
-  if (src.length !== 4 || dst.length !== 4) return null;
+  if (src.length < 4 || src.length !== dst.length) return null;
 
-  const a: number[][] = [];
-  for (let i = 0; i < 4; i++) {
-    const [x, y] = src[i]!;
-    const [u, v] = dst[i]!;
-    a.push([-x, -y, -1, 0, 0, 0, u * x, u * y, u]);
-    a.push([0, 0, 0, -x, -y, -1, v * x, v * y, v]);
+  const nSrc = normalizePoints(src);
+  const nDst = normalizePoints(dst);
+  if (!nSrc || !nDst) return null;
+
+  const rows: number[][] = [];
+  for (let i = 0; i < nSrc.points.length; i++) {
+    const [x, y] = nSrc.points[i]!;
+    const [u, v] = nDst.points[i]!;
+    rows.push([-x, -y, -1, 0, 0, 0, u * x, u * y, u]);
+    rows.push([0, 0, 0, -x, -y, -1, v * x, v * y, v]);
+  }
+  // Four correspondences give only 8 rows; pad so the decomposition always
+  // yields a full 9-column basis and the null vector is addressable.
+  while (rows.length < 9) rows.push([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+  let h: number[];
+  try {
+    const svd = new SingularValueDecomposition(new Matrix(rows), {
+      autoTranspose: true,
+    });
+    h = svd.rightSingularVectors.getColumn(8);
+  } catch {
+    return null;
+  }
+  if (h.some((v) => !Number.isFinite(v))) return null;
+
+  const hNorm = new Matrix([
+    [h[0]!, h[1]!, h[2]!],
+    [h[3]!, h[4]!, h[5]!],
+    [h[6]!, h[7]!, h[8]!],
+  ]);
+
+  let denormalized: Matrix;
+  try {
+    denormalized = inverse(nDst.transform).mmul(hNorm).mmul(nSrc.transform);
+  } catch {
+    return null;
   }
 
-  const h = nullVector(a);
-  if (!h) return null;
-
-  const scale = Math.abs(h[8]!) > 1e-12 ? h[8]! : 1;
-  const H: Mat3 = [
-    h[0]! / scale,
-    h[1]! / scale,
-    h[2]! / scale,
-    h[3]! / scale,
-    h[4]! / scale,
-    h[5]! / scale,
-    h[6]! / scale,
-    h[7]! / scale,
-    h[8]! / scale,
-  ];
-  return H;
+  const flat = denormalized.to1DArray();
+  const scale = Math.abs(flat[8]!) > 1e-12 ? flat[8]! : 1;
+  const H = flat.map((v) => v / scale) as unknown as Mat3;
+  return H.some((v) => !Number.isFinite(v)) ? null : H;
 }
 
-function nullVector(rowsIn: number[][]): number[] | null {
-  const rows = rowsIn.map((r) => r.slice());
-  const m = rows.length;
-  const n = rows[0]?.length ?? 0;
-  if (n === 0) return null;
-
-  const pivots: Array<number | null> = Array(m).fill(null);
-  let row = 0;
-  for (let col = 0; col < n && row < m; col++) {
-    let best = row;
-    for (let i = row + 1; i < m; i++) {
-      if (Math.abs(rows[i]![col]!) > Math.abs(rows[best]![col]!)) best = i;
-    }
-    if (Math.abs(rows[best]![col]!) < 1e-12) continue;
-    [rows[row], rows[best]] = [rows[best]!, rows[row]!];
-    const pivot = rows[row]![col]!;
-    for (let j = col; j < n; j++) rows[row]![j]! /= pivot;
-    for (let i = 0; i < m; i++) {
-      if (i === row) continue;
-      const f = rows[i]![col]!;
-      if (Math.abs(f) < 1e-15) continue;
-      for (let j = col; j < n; j++) rows[i]![j]! -= f * rows[row]![j]!;
-    }
-    pivots[row] = col;
-    row++;
+function normalizePoints(
+  points: Vec2[],
+): { points: Vec2[]; transform: Matrix } | null {
+  const n = points.length;
+  let cx = 0;
+  let cy = 0;
+  for (const p of points) {
+    cx += p[0];
+    cy += p[1];
   }
+  cx /= n;
+  cy /= n;
 
-  const pivotCols = new Set(pivots.filter((p): p is number => p !== null));
-  const freeCols: number[] = [];
-  for (let j = 0; j < n; j++) if (!pivotCols.has(j)) freeCols.push(j);
+  let meanDist = 0;
+  for (const p of points) meanDist += Math.hypot(p[0] - cx, p[1] - cy);
+  meanDist /= n;
+  if (meanDist < 1e-12) return null;
 
-  const x = Array(n).fill(0);
-  if (freeCols.length === 0) {
-    x[n - 1] = 1;
-  } else {
-    x[freeCols[0]!] = 1;
-  }
-
-  for (let i = 0; i < m; i++) {
-    const pc = pivots[i];
-    if (pc === null) continue;
-    let sum = 0;
-    for (let j = 0; j < n; j++) {
-      if (j === pc) continue;
-      sum += rows[i]![j]! * x[j]!;
-    }
-    x[pc] = -sum;
-  }
-
-  const norm = Math.hypot(...x);
-  if (norm < 1e-12) return null;
-  return x.map((v) => v / norm);
+  const s = Math.SQRT2 / meanDist;
+  return {
+    points: points.map((p) => [(p[0] - cx) * s, (p[1] - cy) * s] as Vec2),
+    transform: new Matrix([
+      [s, 0, -s * cx],
+      [0, s, -s * cy],
+      [0, 0, 1],
+    ]),
+  };
 }
 
 export function applyHomography(H: Mat3, p: Vec2): Vec2 {
@@ -89,6 +91,67 @@ export function applyHomography(H: Mat3, p: Vec2): Vec2 {
   const w = H[6] * p[0] + H[7] * p[1] + H[8];
   if (Math.abs(w) < 1e-12) return [x, y];
   return [x / w, y / w];
+}
+
+/**
+ * How pixel position changes per unit of plane coordinate at `p`, as
+ * [dU/dx, dU/dy, dV/dx, dV/dy]. Used to convert plane deltas into screen deltas
+ * in relative aiming mode so it inherits the calibrated orientation and scale.
+ */
+export function homographyJacobian(
+  H: Mat3,
+  p: Vec2,
+): [number, number, number, number] {
+  const nu = H[0] * p[0] + H[1] * p[1] + H[2];
+  const nv = H[3] * p[0] + H[4] * p[1] + H[5];
+  const d = H[6] * p[0] + H[7] * p[1] + H[8];
+  if (Math.abs(d) < 1e-12) return [0, 0, 0, 0];
+  const inv = 1 / d;
+  const inv2 = inv * inv;
+  return [
+    H[0] * inv - nu * H[6] * inv2,
+    H[1] * inv - nu * H[7] * inv2,
+    H[3] * inv - nv * H[6] * inv2,
+    H[4] * inv - nv * H[7] * inv2,
+  ];
+}
+
+export function homographyResiduals(
+  H: Mat3,
+  src: Vec2[],
+  dst: Vec2[],
+): number[] {
+  return src.map((s, i) => {
+    const p = applyHomography(H, s);
+    return Math.hypot(p[0] - dst[i]![0], p[1] - dst[i]![1]);
+  });
+}
+
+/**
+ * Leave-one-out reprojection error in pixels.
+ *
+ * A 4-point fit has zero degrees of freedom left over, so its residuals are
+ * always ~0 and say nothing about quality. Holding each point out in turn gives
+ * an error that actually reflects whether the player aimed consistently.
+ */
+export function crossValidateHomography(
+  src: Vec2[],
+  dst: Vec2[],
+): { maxError: number; meanError: number } | null {
+  if (src.length < 5) return null;
+  const errors: number[] = [];
+  for (let i = 0; i < src.length; i++) {
+    const trainSrc = src.filter((_, j) => j !== i);
+    const trainDst = dst.filter((_, j) => j !== i);
+    const H = solveHomography(trainSrc, trainDst);
+    if (!H) return null;
+    const p = applyHomography(H, src[i]!);
+    errors.push(Math.hypot(p[0] - dst[i]![0], p[1] - dst[i]![1]));
+  }
+  return {
+    maxError: Math.max(...errors),
+    meanError: errors.reduce((a, b) => a + b, 0) / errors.length,
+  };
 }
 
 export function validateHomography(
@@ -106,9 +169,10 @@ export function validateHomography(
     maxError = Math.max(maxError, Math.hypot(dx, dy));
   }
 
+  const hull = [dst[0]!, dst[1]!, dst[2]!, dst[3]!];
   const area =
-    triangleArea(dst[0]!, dst[1]!, dst[2]!) +
-    triangleArea(dst[0]!, dst[2]!, dst[3]!);
+    triangleArea(hull[0], hull[1], hull[2]) +
+    triangleArea(hull[0], hull[2], hull[3]);
   const minArea = screenSize[0] * screenSize[1] * 0.15;
   if (area < minArea) return { ok: false, maxError };
 
@@ -117,20 +181,36 @@ export function validateHomography(
 
 function triangleArea(a: Vec2, b: Vec2, c: Vec2): number {
   return Math.abs(
-    (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1])) /
-      2,
+    (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1])) / 2,
   );
 }
 
-export function calibrationCorners(
+/**
+ * Nine calibration targets: the four corners first so the convex hull is pinned
+ * early, then edge midpoints and the centre. The extra points turn the fit into
+ * an over-determined one, which is what makes error reporting possible and
+ * keeps interior accuracy from depending on four noisy corner captures.
+ */
+export function calibrationPoints(
   width: number,
   height: number,
   inset = 40,
 ): Vec2[] {
+  const left = inset;
+  const right = width - inset;
+  const top = inset;
+  const bottom = height - inset;
+  const midX = width / 2;
+  const midY = height / 2;
   return [
-    [inset, inset],
-    [width - inset, inset],
-    [width - inset, height - inset],
-    [inset, height - inset],
+    [left, top],
+    [right, top],
+    [right, bottom],
+    [left, bottom],
+    [midX, top],
+    [right, midY],
+    [midX, bottom],
+    [left, midY],
+    [midX, midY],
   ];
 }

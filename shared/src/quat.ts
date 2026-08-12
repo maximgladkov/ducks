@@ -43,28 +43,66 @@ export function degToRad(d: number): number {
   return (d * Math.PI) / 180;
 }
 
+/**
+ * Converts DeviceOrientationEvent angles to a quaternion using the intrinsic
+ * Z-X'-Y'' sequence mandated by the spec: R = Rz(alpha) * Rx(beta) * Ry(gamma).
+ *
+ * `screenAngleDeg` compensates for the OS having rotated the UI
+ * (`screen.orientation.angle`), which Safari cannot lock.
+ */
 export function deviceOrientationToQuaternion(
   alphaDeg: number,
   betaDeg: number,
   gammaDeg: number,
+  screenAngleDeg = 0,
 ): Quat {
-  const alpha = degToRad(alphaDeg);
-  const beta = degToRad(betaDeg);
-  const gamma = degToRad(gammaDeg);
+  const halfZ = degToRad(alphaDeg) / 2;
+  const halfX = degToRad(betaDeg) / 2;
+  const halfY = degToRad(gammaDeg) / 2;
 
-  const cA = Math.cos(alpha / 2);
-  const sA = Math.sin(alpha / 2);
-  const cB = Math.cos(beta / 2);
-  const sB = Math.sin(beta / 2);
-  const cG = Math.cos(gamma / 2);
-  const sG = Math.sin(gamma / 2);
+  const cZ = Math.cos(halfZ);
+  const sZ = Math.sin(halfZ);
+  const cX = Math.cos(halfX);
+  const sX = Math.sin(halfX);
+  const cY = Math.cos(halfY);
+  const sY = Math.sin(halfY);
 
-  const w = cA * cB * cG - sA * sB * sG;
-  const x = sA * sB * cG + cA * cB * sG;
-  const y = sA * cB * cG + cA * sB * sG;
-  const z = cA * sB * cG - sA * cB * sG;
+  const q = quatNormalize([
+    cZ * sX * cY - sZ * cX * sY,
+    cZ * cX * sY + sZ * sX * cY,
+    sZ * cX * cY + cZ * sX * sY,
+    cZ * cX * cY - sZ * sX * sY,
+  ]);
 
-  return quatNormalize([x, y, z, w]);
+  return screenAngleDeg === 0 ? q : applyScreenAngle(q, screenAngleDeg);
+}
+
+/**
+ * Rotates the device frame about the screen normal so that a given pose yields
+ * the same aim regardless of how the OS has rotated the UI.
+ */
+export function applyScreenAngle(q: Quat, screenAngleDeg: number): Quat {
+  const spin = quatFromAxisAngle([0, 0, 1], -degToRad(screenAngleDeg));
+  return quatNormalize(quatMultiply(q, spin));
+}
+
+/**
+ * Re-expresses an orientation and its body-frame angular velocity in the screen
+ * frame. The rate has to be rotated alongside the orientation: leaving it in
+ * device axes would make prediction lead in the wrong direction whenever the OS
+ * has rotated the UI.
+ */
+export function toScreenFrame(
+  q: Quat,
+  w: Vec3,
+  screenAngleDeg: number,
+): { q: Quat; w: Vec3 } {
+  if (screenAngleDeg === 0) return { q: quatNormalize(q), w };
+  const spin = quatFromAxisAngle([0, 0, 1], -degToRad(screenAngleDeg));
+  return {
+    q: quatNormalize(quatMultiply(q, spin)),
+    w: quatRotateVec(quatConjugate(spin), w),
+  };
 }
 
 export function phoneForwardRay(q: Quat, muzzle: Vec3 = [0, 1, 0]): Vec3 {
@@ -89,19 +127,18 @@ export function dot3(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+/**
+ * Which device axis the player treats as the barrel. Axis flips and swaps are
+ * deliberately absent: they are linear, so the calibration homography absorbs
+ * them exactly and including them would make grip detection ambiguous.
+ */
 export type AimBasis = {
   muzzle: Vec3;
-  swapXY: boolean;
-  invertX: boolean;
-  invertY: boolean;
   label: string;
 };
 
 export const DEFAULT_AIM_BASIS: AimBasis = {
   muzzle: [0, 1, 0],
-  swapXY: false,
-  invertX: false,
-  invertY: false,
   label: "top-edge (gun, screen up)",
 };
 
@@ -136,39 +173,49 @@ export function rayToPlaneWithMuzzle(
   return [dot3(ray, right) / depth, dot3(ray, up) / depth];
 }
 
-export function applyBasisToPlane(
-  plane: [number, number],
-  basis: Pick<AimBasis, "swapXY" | "invertX" | "invertY">,
-): [number, number] {
-  let x = plane[0];
-  let y = plane[1];
-  if (basis.swapXY) [x, y] = [y, x];
-  if (basis.invertX) x = -x;
-  if (basis.invertY) y = -y;
-  return [x, y];
-}
-
 export function orientationToPlane(
   q: Quat,
   basis: AimBasis,
 ): [number, number] | null {
   const ray = phoneForwardRay(q, basis.muzzle);
-  const plane = rayToPlaneWithMuzzle(ray, basis.muzzle);
-  if (!plane) return null;
-  return applyBasisToPlane(plane, basis);
+  return rayToPlaneWithMuzzle(ray, basis.muzzle);
+}
+
+/**
+ * Plane coordinates are gnomonic, so each axis is the tangent of a true angle.
+ * Working in degrees makes smoothing isotropic and gives the filter parameters
+ * physical units, unlike pixels which the homography distorts across the screen.
+ */
+export function planeToAnglesDeg(plane: [number, number]): [number, number] {
+  return [
+    (Math.atan(plane[0]) * 180) / Math.PI,
+    (Math.atan(plane[1]) * 180) / Math.PI,
+  ];
+}
+
+export function anglesDegToPlane(angles: [number, number]): [number, number] {
+  const limit = 89;
+  const ax = Math.max(-limit, Math.min(limit, angles[0]));
+  const ay = Math.max(-limit, Math.min(limit, angles[1]));
+  return [Math.tan((ax * Math.PI) / 180), Math.tan((ay * Math.PI) / 180)];
 }
 
 export function rayToNormalizedPlane(ray: Vec3): [number, number] | null {
   return rayToPlaneWithMuzzle(ray, [0, 1, 0]);
 }
 
+/**
+ * Body-frame angular velocity between two orientations, matching the frame that
+ * `DeviceMotionEvent.rotationRate` and `Gyroscope` report in. The delta is
+ * therefore left-multiplied by the inverse of q0, not right-multiplied.
+ */
 export function angularVelocityFromQuats(
   q0: Quat,
   q1: Quat,
   dt: number,
 ): Vec3 {
   if (dt <= 1e-6) return [0, 0, 0];
-  const dq = quatMultiply(q1, quatConjugate(q0));
+  const dq = quatMultiply(quatConjugate(q0), q1);
   const [x, y, z, w] = quatNormalize(dq);
   const sinHalf = Math.hypot(x, y, z);
   if (sinHalf < 1e-8) return [0, 0, 0];
@@ -177,27 +224,18 @@ export function angularVelocityFromQuats(
   return [x * scale, y * scale, z * scale];
 }
 
+/**
+ * Advances an orientation by a body-frame angular velocity. Gyroscope rates are
+ * expressed in the device's own axes, so the delta composes on the right;
+ * composing on the left would rotate about world axes and skew the result by
+ * several degrees whenever the device is pitched.
+ */
 export function predictOrientation(q: Quat, w: Vec3, dtSec: number): Quat {
   const speed = Math.hypot(w[0], w[1], w[2]);
   if (speed < 1e-8 || Math.abs(dtSec) < 1e-8) return quatNormalize(q);
   const axis: Vec3 = [w[0] / speed, w[1] / speed, w[2] / speed];
   const dq = quatFromAxisAngle(axis, speed * dtSec);
-  return quatNormalize(quatMultiply(dq, q));
-}
-
-export function relativeAimDelta(
-  prevQ: Quat,
-  nextQ: Quat,
-  sensitivity: number,
-  basis: AimBasis = DEFAULT_AIM_BASIS,
-): { dx: number; dy: number } {
-  const a = orientationToPlane(prevQ, basis);
-  const b = orientationToPlane(nextQ, basis);
-  if (!a || !b) return { dx: 0, dy: 0 };
-  return {
-    dx: (b[0] - a[0]) * sensitivity,
-    dy: (b[1] - a[1]) * sensitivity,
-  };
+  return quatNormalize(quatMultiply(q, dq));
 }
 
 export function quatDot(a: Quat, b: Quat): number {
@@ -269,6 +307,15 @@ export function predictOrientationSafe(
   const speed = Math.hypot(w[0], w[1], w[2]);
   if (speed < minSpeed || dt < 1e-4) return quatNormalize(q);
   return predictOrientation(q, w, dt);
+}
+
+/**
+ * World "up" expressed in device axes. A device at rest should report
+ * `accelerationIncludingGravity` pointing this way; iOS negates it, so comparing
+ * the two lets us detect the platform's sign convention without sniffing the UA.
+ */
+export function expectedAccelDirection(q: Quat): Vec3 {
+  return quatRotateVec(quatConjugate(q), [0, 0, 1]);
 }
 
 export function applyReferenceFrame(q: Quat, refInverse: Quat): Quat {

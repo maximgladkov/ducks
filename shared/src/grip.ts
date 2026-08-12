@@ -1,7 +1,7 @@
 import {
-  applyHomography,
+  crossValidateHomography,
+  homographyResiduals,
   solveHomography,
-  validateHomography,
 } from "./homography.js";
 import {
   MUZZLE_CANDIDATES,
@@ -13,80 +13,66 @@ import type { Mat3, Quat, Vec2 } from "./types.js";
 export type GripFit = {
   basis: AimBasis;
   H: Mat3;
+  /** Worst leave-one-out error in pixels, or fit residual when N < 5. */
   maxError: number;
+  meanError: number;
+  /** True when enough points were supplied for the error to be meaningful. */
+  validated: boolean;
 };
 
+/**
+ * Picks the muzzle axis whose projection best explains the calibration captures.
+ *
+ * Only the muzzle is searched. Axis swaps and inversions are linear maps of the
+ * plane, so the homography reproduces them exactly and every combination scores
+ * identically -- including them would leave the winner decided by floating-point
+ * noise rather than geometry.
+ */
 export function detectAimBasis(
   quats: Quat[],
-  screenCorners: Vec2[],
-  screenSize: Vec2,
+  screenPoints: Vec2[],
 ): GripFit | null {
-  if (quats.length < 4 || screenCorners.length < 4) return null;
+  const n = Math.min(quats.length, screenPoints.length);
+  if (n < 4) return null;
+  const targets = screenPoints.slice(0, n);
 
   let best: GripFit | null = null;
 
   for (const candidate of MUZZLE_CANDIDATES) {
-    for (const swapXY of [false, true]) {
-      for (const invertX of [false, true]) {
-        for (const invertY of [false, true]) {
-          const basis: AimBasis = {
-            muzzle: candidate.muzzle,
-            swapXY,
-            invertX,
-            invertY,
-            label: formatBasisLabel(candidate.label, swapXY, invertX, invertY),
-          };
-          const planes: Vec2[] = [];
-          let ok = true;
-          for (const q of quats.slice(0, 4)) {
-            const plane = orientationToPlane(q, basis);
-            if (!plane) {
-              ok = false;
-              break;
-            }
-            planes.push(plane);
-          }
-          if (!ok) continue;
+    const basis: AimBasis = {
+      muzzle: candidate.muzzle,
+      label: candidate.label,
+    };
 
-          const H = solveHomography(planes, screenCorners.slice(0, 4));
-          if (!H) continue;
-          const check = validateHomography(
-            H,
-            planes,
-            screenCorners.slice(0, 4),
-            0.08,
-            screenSize,
-          );
-          if (!best || check.maxError < best.maxError) {
-            best = { basis, H, maxError: check.maxError };
-          }
-        }
+    const planes: Vec2[] = [];
+    let ok = true;
+    for (const q of quats.slice(0, n)) {
+      const plane = orientationToPlane(q, basis);
+      if (!plane) {
+        ok = false;
+        break;
       }
+      planes.push(plane);
     }
+    if (!ok) continue;
+
+    const H = solveHomography(planes, targets);
+    if (!H) continue;
+
+    const cv = crossValidateHomography(planes, targets);
+    const residuals = homographyResiduals(H, planes, targets);
+    const fit: GripFit = cv
+      ? { basis, H, maxError: cv.maxError, meanError: cv.meanError, validated: true }
+      : {
+          basis,
+          H,
+          maxError: Math.max(...residuals),
+          meanError: residuals.reduce((a, b) => a + b, 0) / residuals.length,
+          validated: false,
+        };
+
+    if (!best || fit.meanError < best.meanError) best = fit;
   }
 
-  if (!best) return null;
-  const cornersMapped = [0, 1, 2, 3].every((i) => {
-    const plane = orientationToPlane(quats[i]!, best!.basis);
-    if (!plane) return false;
-    const p = applyHomography(best!.H, plane);
-    const dx = (p[0] - screenCorners[i]![0]) / screenSize[0];
-    const dy = (p[1] - screenCorners[i]![1]) / screenSize[1];
-    return Math.hypot(dx, dy) < 0.08;
-  });
-  if (!cornersMapped && best.maxError > 0.05) return null;
   return best;
-}
-
-function formatBasisLabel(
-  muzzle: string,
-  swapXY: boolean,
-  invertX: boolean,
-  invertY: boolean,
-): string {
-  const bits = [muzzle];
-  if (swapXY) bits.push("swapXY");
-  if (invertX) bits.push("invX");
-  if (invertY) bits.push("invY");
-  return bits.join(" · ");
 }

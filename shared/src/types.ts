@@ -39,7 +39,7 @@ export type ClockPong = {
 };
 
 export type HostToControllerMessage =
-  | { type: "calib_prompt"; seq: number; corner: Vec2 }
+  | { type: "calib_prompt"; seq: number; total: number; corner: Vec2 }
   | { type: "calib_done"; ok: boolean; reason?: string }
   | { type: "calib_cancel" }
   | { type: "status"; text: string }
@@ -116,10 +116,16 @@ export function colorForPlayer(index: number): string {
   return PLAYER_COLORS[index % PLAYER_COLORS.length]!;
 }
 
+/**
+ * Filtering now happens in degrees of aim angle rather than pixels, so
+ * `minCutoff` and `beta` are in Hz and Hz-per-deg/s. A 200 deg/s flick raises
+ * the cutoff to ~11 Hz, while a steady hold stays at 1 Hz.
+ */
 export const DEFAULT_DEBUG_SETTINGS = {
-  minCutoff: 0.5,
-  beta: 0.007,
+  minCutoff: 1,
+  beta: 0.05,
   predictionHorizonMs: 25,
+  filterLeadGain: 1,
   aimAssistRadius: 20,
   sensitivity: 900,
   predictionEnabled: true,
