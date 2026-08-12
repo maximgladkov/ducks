@@ -53,7 +53,6 @@ body {
 }
 
 #status,
-#transport,
 #hint,
 #warn {
   text-align: center;
@@ -64,12 +63,6 @@ body {
   line-height: 1.6;
   color: var(--nes-white);
   text-shadow: 2px 2px 0 #000;
-}
-
-#transport {
-  color: var(--muted);
-  font-size: 7px;
-  line-height: 1.5;
 }
 
 #hint {
@@ -87,45 +80,46 @@ body {
   background: #000;
 }
 
-button {
+/*
+ * A thumb resting on a button for a whole round is exactly the gesture phones
+ * treat as "select this text" or "share this image", so everything that could
+ * interrupt a shot is refused here rather than only at the document level.
+ */
+#trigger {
+  flex: 1;
+  min-height: 46vh;
   border: 4px solid #000;
   border-radius: 0;
   padding: 14px 12px;
-  font-size: 10px;
   font-family: inherit;
   font-weight: 400;
-  color: var(--nes-white);
-  background: #7c7c7c;
-  box-shadow: inset -4px -4px 0 #404040, inset 4px 4px 0 #bcbcbc;
-  text-shadow: 2px 2px 0 #000;
-}
-
-button:disabled {
-  opacity: 0.45;
-}
-
-#enable {
-  background: var(--nes-blue);
-  box-shadow: inset -4px -4px 0 #003888, inset 4px 4px 0 #3cbcfc;
-}
-
-#recentre {
-  background: #00a800;
-  box-shadow: inset -4px -4px 0 #007800, inset 4px 4px 0 #80d010;
-}
-
-#trigger {
-  flex: 1;
-  min-height: 38vh;
-  font-size: 22px;
+  font-size: 26px;
   letter-spacing: 0.12em;
+  color: var(--nes-white);
+  text-shadow: 2px 2px 0 #000;
   background: var(--nes-red);
   box-shadow: inset -6px -6px 0 #880000, inset 6px 6px 0 #fc7460;
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
 }
 
 #trigger:active {
   box-shadow: inset 6px 6px 0 #880000, inset -6px -6px 0 #fc7460;
   transform: translateY(2px);
+}
+
+/* Before motion access is granted the button is a start button, not a trigger. */
+#trigger[data-state="idle"] {
+  font-size: 15px;
+  background: var(--nes-blue);
+  box-shadow: inset -6px -6px 0 #003888, inset 6px 6px 0 #3cbcfc;
 }
 
 .hidden {

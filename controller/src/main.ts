@@ -8,25 +8,33 @@ import {
 } from "./transport";
 
 const statusEl = document.getElementById("status")!;
-const transportEl = document.getElementById("transport")!;
-const sensorEl = document.getElementById("sensors")!;
 const warnEl = document.getElementById("warn")!;
-const enableBtn = document.getElementById("enable") as HTMLButtonElement;
-const recentreBtn = document.getElementById("recentre") as HTMLButtonElement;
+const hintEl = document.getElementById("hint")!;
 const triggerBtn = document.getElementById("trigger") as HTMLButtonElement;
 
 const params = new URLSearchParams(location.search);
 const pathSession = location.pathname.match(/\/c\/([a-z]{2,4})\/?$/i)?.[1]?.toLowerCase();
 const sessionId = pathSession ?? params.get("session");
 
+const IDLE_HINT = "Hold two fingers to recentre";
+const RECENTRE_HOLD_MS = 600;
+
 let wakeLock: WakeLockSentinel | null = null;
 let eventSeq = 0;
-let motionEnabled = false;
+let armed = false;
 let shotsRemaining = 3;
 let lockedOrientation = screen.orientation?.type ?? "unknown";
+let activePointer: number | null = null;
+let recentreTimer: number | null = null;
+let baseHint = IDLE_HINT;
 
 function setStatus(text: string): void {
   statusEl.textContent = text;
+}
+
+function setHint(text: string): void {
+  baseHint = text;
+  hintEl.textContent = text;
 }
 
 function setWarn(text: string | null): void {
@@ -41,20 +49,18 @@ function setWarn(text: string | null): void {
 
 if (!sessionId) {
   setStatus("Missing session — scan the host QR code");
-  enableBtn.disabled = true;
 }
 
 const session = new ControllerSession(sendStub, {
   onReady: (playerId) => setStatus(`Joined as ${playerId}`),
-  onTransport: (kind) => {
-    transportEl.textContent = `Transport: ${kind}`;
-  },
   onHostMessage: (msg) => {
     if (msg.type === "calib_prompt") {
       setStatus(`Calibrate target ${msg.seq + 1}/${msg.total}`);
+      setHint("Keep one grip for all 9 targets — aim, then FIRE");
     }
     if (msg.type === "calib_done") {
       setStatus(msg.ok ? "Calibration OK — aim and shoot" : msg.reason ?? "Calib failed");
+      setHint(IDLE_HINT);
     }
     if (msg.type === "status") setStatus(msg.text);
     if (msg.type === "ammo") {
@@ -108,41 +114,44 @@ ws.addEventListener("close", () => {
 
 const motion = new MotionPipeline({
   onSample: (q, w, t) => {
-    if (!motionEnabled) return;
+    if (!armed) return;
     session.sendSample({ t, q, w });
-  },
-  onMode: (mode) => {
-    transportEl.textContent = `${transportEl.textContent.split(" · ")[0]} · sensors: ${mode}`;
   },
 });
 
-// Gyro bias only settles while the phone is held still, so surfacing it makes an
-// otherwise invisible part of aim quality debuggable from the phone itself.
+// Diagnostics still leave the phone for the host's debug HUD and session log; it
+// is only the readout on the phone that is gone, since the player cannot act on
+// gyro bias and the screen is meant to be glanced at, not read.
 window.setInterval(() => {
-  if (!motionEnabled) return;
-  const d = motion.getDiagnostics();
-  const sign = d.accelSign === 0 ? "?" : d.accelSign > 0 ? "spec" : "inverted";
-  sensorEl.textContent = `${d.mode} · ${d.emitHz.toFixed(0)}Hz · ${
-    d.converged ? "ready" : `settling ${d.tiltResidualDeg.toFixed(0)}°`
-  } · gyro ${d.gyroConvention} · bias ${d.biasDegPerSec.toFixed(2)}°/s · ${
-    d.stationary ? "still" : "moving"
-  } · accel ${sign}`;
-  session.sendDiag(d);
+  if (!armed) return;
+  session.sendDiag(motion.getDiagnostics());
 }, 500);
 
-enableBtn.addEventListener("click", async () => {
-  sfx.unlock();
-  const ok = await motion.requestPermission();
-  if (!ok) {
-    setStatus("Motion permission denied");
+/**
+ * iOS only grants motion access from inside a user gesture, and a gesture it will
+ * accept is a tap, which is why this is the trigger's own first tap rather than a
+ * separate button: one less thing on screen and one less thing to explain. The
+ * permission call has to be reached before this function first awaits, or Safari
+ * no longer counts it as coming from the tap.
+ */
+async function arm(): Promise<void> {
+  if (armed) return;
+  if (!sessionId) {
+    setStatus("Missing session — scan the host QR code");
     return;
   }
-  motionEnabled = true;
+  sfx.unlock();
+  const granted = await motion.requestPermission();
+  if (!granted) {
+    setStatus("Motion blocked — allow motion access, then tap again");
+    return;
+  }
+  armed = true;
   motion.start();
-  enableBtn.disabled = true;
-  recentreBtn.disabled = false;
-  triggerBtn.disabled = false;
-  setStatus(`Motion enabled · ${motion.getMode()}`);
+  triggerBtn.dataset.state = "ready";
+  triggerBtn.textContent = "FIRE";
+  setStatus(`Ready · ${motion.getMode()}`);
+  setHint(IDLE_HINT);
   wakeLock = await requestWakeLock();
   try {
     const orient = screen.orientation as ScreenOrientation & {
@@ -152,7 +161,7 @@ enableBtn.addEventListener("click", async () => {
   } catch {
     /* optional */
   }
-});
+}
 
 function sendEvent(
   type: "trigger_down" | "trigger_up" | "recentre" | "calib_point",
@@ -161,14 +170,20 @@ function sendEvent(
   session.sendEvent({ t: performance.now(), type, seq });
 }
 
-recentreBtn.addEventListener("click", () => {
+function recentre(): void {
   motion.recentre();
   sendEvent("recentre");
   setStatus("Recentered");
-});
+}
 
-const triggerDown = (ev: Event) => {
-  ev.preventDefault();
+function cancelRecentreHold(): void {
+  if (recentreTimer === null) return;
+  window.clearTimeout(recentreTimer);
+  recentreTimer = null;
+  hintEl.textContent = baseHint;
+}
+
+function fire(): void {
   if (shotsRemaining <= 0) {
     sfx.empty();
   } else {
@@ -176,24 +191,70 @@ const triggerDown = (ev: Event) => {
     sfx.shot();
   }
   sendEvent("trigger_down", eventSeq++);
-};
-const triggerUp = (ev: Event) => {
+}
+
+triggerBtn.addEventListener("click", () => {
+  if (!armed) void arm();
+});
+
+triggerBtn.addEventListener("pointerdown", (ev) => {
+  // The arming tap must not also spend a shot, and it must reach the click that
+  // follows, which is the gesture the permission prompt hangs off — cancelling
+  // this event's default can swallow that click, so it is left alone until armed.
+  if (!armed) return;
   ev.preventDefault();
+  // Recentring re-anchors where the phone thinks the screen is, so a stray one
+  // would undo the calibration's aim and it has to be impossible to reach by
+  // accident. Two fingers rules out a thumb on the trigger, and holding them
+  // rules out the brief overlap you get from mashing the button with both.
+  if (activePointer !== null) {
+    if (ev.pointerId !== activePointer && recentreTimer === null) {
+      hintEl.textContent = "Keep holding to recentre…";
+      recentreTimer = window.setTimeout(() => {
+        recentreTimer = null;
+        hintEl.textContent = baseHint;
+        recentre();
+      }, RECENTRE_HOLD_MS);
+    }
+    return;
+  }
+  activePointer = ev.pointerId;
+  // Aiming means swinging the phone while pressed, and a finger that slides off
+  // the button would otherwise read as a release mid-shot.
+  triggerBtn.setPointerCapture(ev.pointerId);
+  fire();
+});
+
+const releasePointer = (ev: PointerEvent) => {
+  cancelRecentreHold();
+  if (ev.pointerId !== activePointer) return;
+  ev.preventDefault();
+  activePointer = null;
+  if (triggerBtn.hasPointerCapture(ev.pointerId)) {
+    triggerBtn.releasePointerCapture(ev.pointerId);
+  }
   sendEvent("trigger_up", eventSeq++);
 };
 
-triggerBtn.addEventListener("pointerdown", triggerDown);
-triggerBtn.addEventListener("pointerup", triggerUp);
-triggerBtn.addEventListener("pointercancel", triggerUp);
-triggerBtn.addEventListener("pointerleave", triggerUp);
+triggerBtn.addEventListener("pointerup", releasePointer);
+triggerBtn.addEventListener("pointercancel", releasePointer);
 
-document.addEventListener(
+// Long presses, double taps and stray pinches are all normal ways to hold a phone
+// while aiming, and every one of them has a browser default that would put a
+// selection, a magnifier or a zoom over the trigger.
+const swallow = (ev: Event) => ev.preventDefault();
+for (const type of [
   "touchmove",
-  (e) => {
-    e.preventDefault();
-  },
-  { passive: false },
-);
+  "contextmenu",
+  "selectstart",
+  "dragstart",
+  "dblclick",
+  "gesturestart",
+  "gesturechange",
+  "gestureend",
+]) {
+  document.addEventListener(type, swallow, { passive: false });
+}
 
 // Screen rotation is compensated for in the sample stream, so calibration stays
 // valid; it is only worth mentioning when the platform will not tell us the angle.

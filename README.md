@@ -57,16 +57,23 @@ ngrok inspector: http://127.0.0.1:4040
 ## Playtest flow
 
 1. Laptop: open host URL (with `sig` + `publicController` as above).
-2. Scan QR with phone → allow motion when prompted (**Enable motion** must be tapped; iOS requires a user gesture).
-3. Complete four-corner calibration (host shows targets; pull trigger on each).
+2. Scan QR with phone → tap the button once to allow motion (iOS only grants it from a gesture, so the first tap asks and does not fire).
+3. Complete nine-point calibration (host shows targets; pull trigger on each).
 4. Shoot moving circles; toggle **Debug** on the host for filters, prediction, aim assist, absolute vs gyro-mouse.
 5. Second phone: scan the same QR for another crosshair color.
 
-### Controller buttons
+### Controller
 
-- **Enable motion** — permission + start 60 Hz samples
-- **Recentre** — snap aim reference to screen center
-- **TRIGGER** — hitscan on the host
+One button, filling the screen. Its first tap requests motion access and starts
+the 60 Hz sample stream; every tap after that is a shot, and during calibration
+those shots are what capture each target.
+
+Holding a second finger on it for 600 ms snaps the aim reference back to screen
+centre — the old **Recentre** button. It is a hold rather than a tap because an
+accidental recentre would undo the calibration's aim.
+
+Sensor diagnostics are no longer shown on the phone; they still stream to the
+host's debug HUD and session log.
 
 ### Host debug HUD
 

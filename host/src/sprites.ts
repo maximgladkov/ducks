@@ -18,7 +18,6 @@ export type SpriteBank = {
     duckWhite: HTMLImageElement;
     duckRed: HTMLImageElement;
     digits: HTMLImageElement[];
-    digitsGreen: HTMLImageElement[];
   };
   ducks: Record<DuckKind, DuckFrames>;
   dog: {
@@ -62,10 +61,6 @@ async function loadDuck(kind: DuckKind): Promise<DuckFrames> {
 
 export async function loadSpriteBank(): Promise<SpriteBank> {
   const digitPaths = Array.from({ length: 10 }, (_, i) => `hud/digits/${i}.png`);
-  const digitGreenPaths = Array.from(
-    { length: 10 },
-    (_, i) => `hud/digits/g${i}.png`,
-  );
   const cloudPaths = [
     ...Array.from({ length: 4 }, (_, i) => `clouds/fluff${i}.png`),
     ...Array.from({ length: 6 }, (_, i) => `clouds/cloud${i + 2}.png`),
@@ -81,7 +76,6 @@ export async function loadSpriteBank(): Promise<SpriteBank> {
     duckWhite,
     duckRed,
     digits,
-    digitsGreen,
     black,
     brown,
     blue,
@@ -99,7 +93,6 @@ export async function loadSpriteBank(): Promise<SpriteBank> {
     loadImage("hud/duck_white.png"),
     loadImage("hud/duck_red.png"),
     Promise.all(digitPaths.map(loadImage)),
-    Promise.all(digitGreenPaths.map(loadImage)),
     loadDuck("black"),
     loadDuck("brown"),
     loadDuck("blue"),
@@ -120,7 +113,6 @@ export async function loadSpriteBank(): Promise<SpriteBank> {
       duckWhite,
       duckRed,
       digits,
-      digitsGreen,
     },
     ducks: { black, brown, blue },
     dog: {

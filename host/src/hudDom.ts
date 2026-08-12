@@ -1,15 +1,13 @@
 import type { HudState } from "./hud";
 import { HUD_HIT_SLOTS, HUD_MAX_SHOTS, hudShotsRemaining } from "./hud";
 
-const digitSrc = (n: number, green = false) =>
-  `/sprites/hud/digits/${green ? "g" : ""}${n}.png`;
+const digitSrc = (n: number) => `/sprites/hud/digits/${n}.png`;
 
 export function renderHudDom(hud: HudState): void {
-  const roundImg = document.getElementById("hud-round") as HTMLImageElement | null;
-  if (roundImg) {
-    const n = Math.min(9, Math.max(1, hud.round));
-    roundImg.src = digitSrc(n, true);
-    roundImg.alt = String(n);
+  const roundEl = document.getElementById("hud-round");
+  if (roundEl) {
+    // Text rather than digit sprites, so a run that passes round 9 keeps counting.
+    roundEl.textContent = `ROUND ${Math.max(1, Math.floor(hud.round))}`;
   }
 
   const scoreRoot = document.getElementById("hud-score");

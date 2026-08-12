@@ -2,5 +2,8 @@ quack.wav / quack.mp3
   Source: "Ducks" by DenisChardonnet — BigSoundBank.com
   License: CC0 (public domain equivalent)
   https://bigsoundbank.com/ducks-s0276.html
-  One cry taken from the 22-second recording (at 8.575s), high-passed to drop
-  outdoor rumble, faded at both ends and normalised to -1 dBFS.
+  Two cries taken from the 22-second recording (at 8.70s and 9.75s) and joined
+  into one call. Each is cut past its slow swell so it starts on the loud part,
+  then high-passed to drop outdoor rumble, dynamically normalised so the whole
+  call is loud rather than just its peak, faded at both ends and limited to
+  -0.5 dBFS.

@@ -180,15 +180,23 @@ export class Sfx {
   /**
    * The impact stays synthesised and the quack is a recording layered over it.
    *
-   * A real quack swells over a couple of hundred milliseconds, which is how ducks
-   * sound but not how a hit should feel, so on its own it lands late and soft. The
-   * blip gives the shot its instant bite and the recording gives it the bird. If
-   * the sample has not loaded, or cannot be, the blip carries the sound alone.
+   * A real quack swells rather than cracks, so on its own it lands late for a
+   * gunshot. The blip gives the shot its instant bite and the recording gives it
+   * the bird. Only a short blip, though: square waves sit in the same few hundred
+   * to few thousand Hz as a duck, and the longer tail this used to have simply
+   * masked the quack. When the sample is missing the full synthesised sound plays
+   * instead, so a hit is never silent.
    */
   duckHit(): void {
     this.run(() => {
       this.noise(0.06, 0.4, 2800);
       this.tone({ freq: 980, dur: 0.05, type: "square", gain: 0.32 });
+
+      if (this.quackBuf) {
+        this.playBuffer(this.quackBuf, 1.05, 0.02);
+        return;
+      }
+      void this.loadSamples();
       this.tone({ freq: 1480, dur: 0.08, type: "square", gain: 0.22 }, 0.045);
       this.tone({
         freq: 420,
@@ -197,12 +205,6 @@ export class Sfx {
         gain: 0.18,
         slide: 1.7,
       }, 0.09);
-
-      if (this.quackBuf) {
-        this.playBuffer(this.quackBuf, 0.9, 0.03);
-        return;
-      }
-      void this.loadSamples();
       this.tone({
         freq: 320,
         dur: 0.12,

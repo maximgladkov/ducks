@@ -20,15 +20,11 @@
     <div id="app">
       <div class="brand">DUCK HUNT</div>
       <div id="status">Connecting…</div>
-      <div id="transport"></div>
-      <div id="sensors"></div>
       <div id="warn" class="hidden"></div>
-      <button id="enable" type="button">ENABLE MOTION</button>
-      <button id="recentre" type="button" disabled>RECENTRE</button>
-      <button id="trigger" type="button" disabled>FIRE</button>
-      <div id="hint">
-        Hold any grip — keep it for all 9 targets. Calibration detects your axes.
-      </div>
+      <button id="trigger" type="button" data-state="idle" draggable="false">
+        TAP TO START
+      </button>
+      <div id="hint">Hold two fingers to recentre</div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

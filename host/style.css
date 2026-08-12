@@ -339,11 +339,20 @@ body {
   z-index: 1;
 }
 
-.hud-round img {
-  image-rendering: pixelated;
-  height: var(--hud-label);
-  width: auto;
-  display: block;
+/*
+ * The other captions are NES sprites, but the original only ever spelled this one
+ * "R=", so there is no ROUND sprite to cut letters from and no green digit either:
+ * label and number are one run of text so they read as a single phrase.
+ */
+#hud-round {
+  font-family: "Press Start 2P", "Courier New", monospace;
+  font-size: calc(var(--hud-label) * 1.05);
+  line-height: 1;
+  color: #fcfcfc;
+  letter-spacing: 0.04em;
+  /* A monospace space plus letter-spacing reads as a double gap before the number. */
+  word-spacing: -0.3em;
+  white-space: nowrap;
 }
 
 .hud-box {
