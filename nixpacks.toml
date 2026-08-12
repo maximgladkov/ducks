@@ -1,12 +1,13 @@
 [variables]
 NIXPACKS_NODE_VERSION = "20"
 NPM_CONFIG_PRODUCTION = "false"
+NIXPACKS_NO_CACHE = "1"
 
 [phases.setup]
 nixPkgs = ["nodejs_20", "npm-9_x"]
 
 [phases.install]
-cmds = ["npm ci"]
+cmds = ["npm ci --include=dev"]
 
 [phases.build]
 cmds = ["npm run build"]
