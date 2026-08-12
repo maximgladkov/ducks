@@ -10,6 +10,8 @@ export class Sfx {
   private ctx: AudioContext | null = null;
   private noiseBuf: AudioBuffer | null = null;
   private master: GainNode | null = null;
+  private quackBuf: AudioBuffer | null = null;
+  private loading: Promise<void> | null = null;
 
   get ready(): boolean {
     return !!this.ctx && this.ctx.state === "running";
@@ -20,6 +22,7 @@ export class Sfx {
     if (!ctx) return;
     if (ctx.state === "suspended") void ctx.resume();
     this.bakeNoise(ctx);
+    void this.loadSamples();
   }
 
   private ensure(): AudioContext | null {
@@ -34,8 +37,60 @@ export class Sfx {
       this.master.gain.value = 0.9;
       this.master.connect(this.ctx.destination);
       this.bakeNoise(this.ctx);
+      void this.loadSamples();
     }
     return this.ctx;
+  }
+
+  private assetUrl(path: string): string {
+    const base = import.meta.env.BASE_URL ?? "/";
+    const root = base.endsWith("/") ? base : `${base}/`;
+    return `${root}${path.replace(/^\//, "")}`;
+  }
+
+  private loadSamples(): Promise<void> {
+    if (this.loading) return this.loading;
+    this.loading = (async () => {
+      const ctx = this.ctx;
+      if (!ctx) return;
+      const quack = await this.fetchBuffer(ctx, "sfx/quack.mp3");
+      if (quack) {
+        this.quackBuf = quack;
+        return;
+      }
+      // Letting the failed attempt stand would silence the quack for the rest of
+      // the session over one bad fetch, so the next hit is free to try again.
+      this.loading = null;
+    })().catch(() => {
+      this.loading = null;
+    });
+    return this.loading;
+  }
+
+  private async fetchBuffer(
+    ctx: AudioContext,
+    path: string,
+  ): Promise<AudioBuffer | null> {
+    try {
+      const res = await fetch(this.assetUrl(path));
+      if (!res.ok) return null;
+      const data = await res.arrayBuffer();
+      return await ctx.decodeAudioData(data.slice(0));
+    } catch {
+      return null;
+    }
+  }
+
+  private playBuffer(buf: AudioBuffer, gain = 1, at = 0): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const g = ctx.createGain();
+    g.gain.value = gain;
+    src.connect(g);
+    g.connect(this.out());
+    src.start(ctx.currentTime + at);
   }
 
   private out(): AudioNode {
@@ -122,6 +177,14 @@ export class Sfx {
     this.duckHit();
   }
 
+  /**
+   * The impact stays synthesised and the quack is a recording layered over it.
+   *
+   * A real quack swells over a couple of hundred milliseconds, which is how ducks
+   * sound but not how a hit should feel, so on its own it lands late and soft. The
+   * blip gives the shot its instant bite and the recording gives it the bird. If
+   * the sample has not loaded, or cannot be, the blip carries the sound alone.
+   */
   duckHit(): void {
     this.run(() => {
       this.noise(0.06, 0.4, 2800);
@@ -134,6 +197,12 @@ export class Sfx {
         gain: 0.18,
         slide: 1.7,
       }, 0.09);
+
+      if (this.quackBuf) {
+        this.playBuffer(this.quackBuf, 0.9, 0.03);
+        return;
+      }
+      void this.loadSamples();
       this.tone({
         freq: 320,
         dur: 0.12,
