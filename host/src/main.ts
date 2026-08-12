@@ -69,9 +69,22 @@ const crossLayer = document.getElementById("crosshairs")!;
 const qrCanvas = document.getElementById("qr") as HTMLCanvasElement;
 const joinUrlEl = document.getElementById("join-url")!;
 const playersEl = document.getElementById("players")!;
-const calibBanner = document.getElementById("calib-banner")!;
+const calibOverlay = document.getElementById("calib-overlay")!;
+const calibSpotlight = document.getElementById("calib-spotlight")!;
+const calibDot = document.getElementById("calib-dot")!;
+const calibCard = document.getElementById("calib-card")!;
+const calibCount = document.getElementById("calib-count")!;
+const calibPips = document.getElementById("calib-pips")!;
+const calibStatus = document.getElementById("calib-status")!;
+const calibResult = document.getElementById("calib-result")!;
 const debugEl = document.getElementById("debug")!;
 const toggleDebug = document.getElementById("toggle-debug")!;
+
+for (let i = 0; i < CALIB_POINT_COUNT; i++) {
+  const pip = document.createElement("div");
+  pip.className = "calib-pip";
+  calibPips.appendChild(pip);
+}
 
 let settings = loadSettings();
 diagStart({
@@ -92,7 +105,7 @@ let fps = 0;
 let frameTime = 0;
 let debugOpen = false;
 let calibratingPlayerId: string | null = null;
-let calibMarker: HTMLDivElement | null = null;
+let calibSeq = 0;
 let calibCapture: {
   playerId: string;
   samples: Vec2[];
@@ -121,6 +134,9 @@ function resize(): void {
   canvas.style.height = `${window.innerHeight}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   setCloudScreen(window.innerWidth, window.innerHeight);
+  if (calibratingPlayerId !== null && !calibDot.classList.contains("hidden")) {
+    showCalibCorner(calibSeq);
+  }
 }
 window.addEventListener("resize", resize);
 resize();
@@ -184,35 +200,73 @@ function renderPlayers(): void {
     .join("");
 }
 
-function setCalibBanner(text: string | null): void {
+function setCalibStatus(text: string | null): void {
+  calibStatus.textContent = text ?? "";
+}
+
+function setCalibResult(text: string | null): void {
   if (!text) {
-    calibBanner.classList.add("hidden");
-    calibBanner.textContent = "";
+    calibResult.classList.add("hidden");
+    calibResult.textContent = "";
     return;
   }
-  calibBanner.classList.remove("hidden");
-  calibBanner.textContent = text;
+  calibResult.classList.remove("hidden");
+  calibResult.textContent = text;
+}
+
+function showCalibOverlay(): void {
+  calibOverlay.classList.remove("hidden");
+  calibDot.classList.add("hidden");
+  calibCard.classList.remove("dodge");
+  calibCount.textContent = "";
+  for (const pip of calibPips.children) {
+    pip.classList.remove("on", "done");
+  }
+}
+
+function hideCalibOverlay(): void {
+  calibOverlay.classList.add("hidden");
+  calibDot.classList.add("hidden");
+  setCalibStatus(null);
+}
+
+function updateCalibPips(seq: number): void {
+  [...calibPips.children].forEach((pip, i) => {
+    pip.classList.toggle("done", i < seq);
+    pip.classList.toggle("on", i === seq);
+  });
+}
+
+function updateCalibDodge(x: number, y: number): void {
+  calibCard.classList.remove("dodge");
+  const rect = calibCard.getBoundingClientRect();
+  const pad = 80;
+  const inside =
+    x >= rect.left - pad &&
+    x <= rect.right + pad &&
+    y >= rect.top - pad &&
+    y <= rect.bottom + pad;
+  calibCard.classList.toggle("dodge", inside);
 }
 
 function showCalibCorner(seq: number): void {
   const c = calibTargets(screenSize())[seq];
   if (!c) return;
-  if (!calibMarker) {
-    calibMarker = document.createElement("div");
-    calibMarker.className = "calib-target";
-    document.getElementById("calib-layer")!.appendChild(calibMarker);
-  }
-  calibMarker.style.left = `${c[0]}px`;
-  calibMarker.style.top = `${c[1]}px`;
-  calibMarker.classList.remove("hidden");
-  setCalibBanner(
-    `Target ${seq + 1}/${CALIB_POINT_COUNT} — same grip the whole time; aim, hold still, trigger`,
-  );
+  calibSeq = seq;
+  calibOverlay.classList.remove("hidden");
+  calibSpotlight.style.setProperty("--calib-x", `${c[0]}px`);
+  calibSpotlight.style.setProperty("--calib-y", `${c[1]}px`);
+  calibDot.style.left = `${c[0]}px`;
+  calibDot.style.top = `${c[1]}px`;
+  calibDot.classList.remove("hidden");
+  calibCount.textContent = `TARGET ${seq + 1} / ${CALIB_POINT_COUNT}`;
+  updateCalibPips(seq);
+  updateCalibDodge(c[0], c[1]);
+  setCalibStatus("Aim at the glowing dot, hold still, then pull the trigger");
 }
 
 function hideCalibCorner(): void {
-  calibMarker?.classList.add("hidden");
-  setCalibBanner(null);
+  hideCalibOverlay();
 }
 
 function sendAmmo(playerId: string): void {
@@ -285,7 +339,8 @@ function waitForSensors(playerId: string, since: number): void {
     startCalibration(playerId);
     return;
   }
-  setCalibBanner("Hold the phone steady in your aiming grip — sensors settling…");
+  showCalibOverlay();
+  setCalibStatus("Hold the phone steady in your aiming grip — sensors settling…");
   peer.send({
     type: "status",
     text: "Hold steady in your aiming grip — settling sensors",
@@ -299,6 +354,7 @@ function startCalibration(playerId: string): void {
   if (!p || !peer) return;
   calibratingPlayerId = playerId;
   calibCapture = null;
+  setCalibResult(null);
   beginCalibration(p);
   diagLog("calib_start", {
     id: playerId,
@@ -326,7 +382,7 @@ function startCalibCapture(p: PlayerRuntime): void {
     quats: [],
     startedAt: performance.now(),
   };
-  setCalibBanner("Hold still — capturing samples…");
+  setCalibStatus("Hold still — capturing samples…");
 }
 
 function completeCalibCapture(p: PlayerRuntime): void {
@@ -340,7 +396,7 @@ function completeCalibCapture(p: PlayerRuntime): void {
       type: "status",
       text: `Too few samples (${quats.length}) — hold longer and retry`,
     });
-    setCalibBanner("Capture failed — hold steadier and retry this corner");
+    setCalibStatus("Capture failed — hold steadier and retry this corner");
     return;
   }
   const angleSpread = quatAngularSpread(quats);
@@ -349,7 +405,7 @@ function completeCalibCapture(p: PlayerRuntime): void {
       type: "status",
       text: `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — steady and retry`,
     });
-    setCalibBanner(
+    setCalibStatus(
       `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`,
     );
     return;
@@ -366,7 +422,7 @@ function completeCalibCapture(p: PlayerRuntime): void {
       type: "status",
       text: `Sensors still settling (${driftRate.toFixed(1)}°/s) — hold steady and retry`,
     });
-    setCalibBanner(
+    setCalibStatus(
       `Sensors still settling (${driftRate.toFixed(1)}°/s drift) — hold steady and retry this target`,
     );
     return;
@@ -414,12 +470,12 @@ function completeCalibCapture(p: PlayerRuntime): void {
   peer.send({ type: "calib_done", ok: result.ok, reason: summary });
   peer.send({ type: "ammo", shots: p.shots });
   syncHudShotsFrom(p.id);
-  setCalibBanner(
+  setCalibResult(
     result.ok
       ? `Calibration ${quality} · grip: ${result.gripLabel} · held-out accuracy ±${result.errorPx.toFixed(0)}px`
       : result.reason ?? "Calibration failed",
   );
-  window.setTimeout(() => setCalibBanner(null), 5000);
+  window.setTimeout(() => setCalibResult(null), 5000);
 }
 
 function onCalibPoint(p: PlayerRuntime, _seq: number): void {
@@ -576,7 +632,7 @@ function frame(now: number): void {
       if (now - calibCapture.startedAt >= CALIB_CAPTURE_MS) {
         completeCalibCapture(p);
       } else {
-        setCalibBanner(
+        setCalibStatus(
           `Hold still — capturing ${calibCapture.samples.length} samples…`,
         );
       }

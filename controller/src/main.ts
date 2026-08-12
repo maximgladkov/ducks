@@ -23,6 +23,7 @@ let wakeLock: WakeLockSentinel | null = null;
 let eventSeq = 0;
 let armed = false;
 let shotsRemaining = 3;
+let calibrating = false;
 let lockedOrientation = screen.orientation?.type ?? "unknown";
 let activePointer: number | null = null;
 let recentreTimer: number | null = null;
@@ -55,10 +56,12 @@ const session = new ControllerSession(sendStub, {
   onReady: (playerId) => setStatus(`Joined as ${playerId}`),
   onHostMessage: (msg) => {
     if (msg.type === "calib_prompt") {
+      calibrating = true;
       setStatus(`Calibrate target ${msg.seq + 1}/${msg.total}`);
-      setHint("Keep one grip for all 9 targets — aim, then FIRE");
+      setHint("Same grip for all 9 dots — aim at the dot, hold still, FIRE");
     }
     if (msg.type === "calib_done") {
+      calibrating = false;
       setStatus(msg.ok ? "Calibration OK — aim and shoot" : msg.reason ?? "Calib failed");
       setHint(IDLE_HINT);
     }
@@ -184,6 +187,11 @@ function cancelRecentreHold(): void {
 }
 
 function fire(): void {
+  if (calibrating) {
+    sfx.shot();
+    sendEvent("trigger_down", eventSeq++);
+    return;
+  }
   if (shotsRemaining <= 0) {
     sfx.empty();
   } else {

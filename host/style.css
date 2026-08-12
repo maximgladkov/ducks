@@ -202,7 +202,7 @@ body {
   line-height: 1.8;
 }
 
-#calib-banner {
+#calib-result {
   position: absolute;
   top: 20px;
   left: 50%;
@@ -486,14 +486,25 @@ body {
   display: none !important;
 }
 
-#calib-layer {
+#calib-overlay {
   position: absolute;
   inset: 0;
-  z-index: 8;
+  z-index: 12;
   pointer-events: none;
 }
 
-.calib-target {
+#calib-spotlight {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle 200px at var(--calib-x, 50%) var(--calib-y, 50%),
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.25) 40%,
+    rgba(0, 0, 0, 0.78) 100%
+  );
+}
+
+#calib-dot {
   position: absolute;
   width: 40px;
   height: 40px;
@@ -501,13 +512,119 @@ body {
   border-radius: 50%;
   background: var(--nes-red);
   border: 4px solid #fcfcfc;
-  box-shadow: 0 0 0 3px #000;
+  box-shadow:
+    0 0 0 3px #000,
+    0 0 34px 14px rgba(252, 116, 96, 0.55);
   pointer-events: none;
   animation: pulse 0.8s steps(2) infinite;
+}
+
+#calib-dot::after {
+  content: "";
+  position: absolute;
+  inset: -18px;
+  border-radius: 50%;
+  border: 3px solid rgba(252, 116, 96, 0.7);
+  animation: calib-ring 1.2s ease-out infinite;
+}
+
+#calib-card {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, 80vw);
+  padding: 20px 22px;
+  background: #000000f2;
+  border: 4px solid var(--nes-yellow);
+  text-align: center;
+  box-sizing: border-box;
+}
+
+#calib-card.dodge {
+  top: 74%;
+}
+
+.calib-title {
+  color: var(--nes-yellow);
+  font-size: 14px;
+  margin-bottom: 16px;
+  letter-spacing: 0.06em;
+}
+
+.calib-steps {
+  margin: 0 0 18px;
+  padding: 0 0 0 1.4em;
+  text-align: left;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--nes-white);
+}
+
+.calib-steps li {
+  margin-bottom: 8px;
+}
+
+.calib-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+#calib-count {
+  font-size: 10px;
+  color: var(--nes-yellow);
+  letter-spacing: 0.04em;
+}
+
+#calib-pips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.calib-pip {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #3a3a3a;
+  border: 2px solid #fcfcfc;
+  box-sizing: border-box;
+}
+
+.calib-pip.on {
+  background: var(--nes-red);
+  box-shadow: 0 0 8px 2px rgba(252, 116, 96, 0.6);
+}
+
+.calib-pip.done {
+  background: var(--nes-yellow);
+  border-color: var(--nes-yellow);
+}
+
+#calib-status {
+  font-size: 9px;
+  line-height: 1.6;
+  color: var(--muted);
+  min-height: 1.6em;
 }
 
 @keyframes pulse {
   50% {
     transform: scale(1.08);
+  }
+}
+
+@keyframes calib-ring {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
   }
 }

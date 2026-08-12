@@ -632,10 +632,23 @@ function finishFrame(
   p.clamped = clamped.clamped;
   p.edge = [clamped.nx, clamped.ny];
 
+  if (p.missFlash > 0) {
+    p.missFlash = Math.max(0, p.missFlash - dt * 4);
+  }
+
+  if (p.calibrating) {
+    p.el.style.display = "none";
+    p.wedge.style.display = "none";
+    p.ghostRaw.style.display = "none";
+    p.ghostFilt.style.display = "none";
+    p.ghostPred.style.display = "none";
+    return;
+  }
+
+  p.el.style.display = "block";
   p.el.style.transform = `translate3d(${p.aim[0]}px, ${p.aim[1]}px, 0)`;
   if (p.missFlash > 0) {
     p.el.classList.add("flash");
-    p.missFlash = Math.max(0, p.missFlash - dt * 4);
   } else {
     p.el.classList.remove("flash");
   }
