@@ -1,6 +1,7 @@
 import {
   DEFAULT_AIM_BASIS,
   DEFAULT_DEBUG_SETTINGS,
+  MUZZLE_CANDIDATES,
   OneEuroFilter2D,
   aimAssistPull,
   anglesDegToPlane,
@@ -36,6 +37,7 @@ import {
   type Vec2,
 } from "@duckhunt/shared";
 import { HUD_MAX_SHOTS } from "./hud";
+import { diagEvery, diagLog, round, roundAll } from "./diag";
 
 export type Target = {
   id: string;
@@ -88,6 +90,8 @@ export type PlayerRuntime = {
   calibQuats: Quat[];
   calibrating: boolean;
   hasRecentered: boolean;
+  sensorReady: boolean;
+  sensorTiltDeg: number;
   gripLabel: string;
   el: HTMLDivElement;
   wedge: HTMLDivElement;
@@ -98,7 +102,7 @@ export type PlayerRuntime = {
 
 // Bumped from v4: filter parameters moved from pixels to degrees of aim angle,
 // so previously stored values mean something entirely different now.
-const SETTINGS_KEY = "duckhunt.debug.v5";
+const SETTINGS_KEY = "duckhunt.debug.v6";
 
 export function loadSettings(): DebugSettings {
   try {
@@ -117,6 +121,7 @@ export function loadSettings(): DebugSettings {
 
 export function saveSettings(s: DebugSettings): void {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  diagLog("settings", { ...s });
 }
 
 export function createPlayer(
@@ -184,6 +189,8 @@ export function createPlayer(
     calibQuats: [],
     calibrating: false,
     hasRecentered: false,
+    sensorReady: false,
+    sensorTiltDeg: 0,
     gripLabel: DEFAULT_AIM_BASIS.label,
     el,
     wedge,
@@ -423,7 +430,104 @@ export function updatePlayerFrame(
   }
 
   p.filtered = planeToScreen(aimPlane, p, screen, settings);
+  logAimFrame(p, rawPlane, predictedPlane, aimPlane, screen);
   finishFrame(p, p.filtered, settings, screen, targets, dt, showGhosts);
+}
+
+/**
+ * Screen pixels per degree of aim angle, as the 2x2 matrix
+ * [dU/dAngleX, dU/dAngleY; dV/dAngleX, dV/dAngleY]. Plane coordinates are
+ * tangents, so the chain rule picks up a sec^2 term away from the centre.
+ */
+function pixelsPerDegree(H: Mat3 | null, plane: Vec2, screen: Vec2): number[] {
+  const rad = Math.PI / 180;
+  const sx = (1 + plane[0] * plane[0]) * rad;
+  const sy = (1 + plane[1] * plane[1]) * rad;
+  if (!H) {
+    const scale = Math.min(screen[0], screen[1]) * 0.55;
+    return [scale * sx, 0, 0, scale * sy];
+  }
+  const [dudx, dudy, dvdx, dvdy] = homographyJacobian(H, plane);
+  return [dudx * sx, dudy * sy, dvdx * sx, dvdy * sy];
+}
+
+function logAimFrame(
+  p: PlayerRuntime,
+  rawPlane: Vec2,
+  predictedPlane: Vec2,
+  aimPlane: Vec2,
+  screen: Vec2,
+): void {
+  if (!diagEvery(`aim:${p.id}`, 100)) return;
+  const sample = p.lastSample;
+  diagLog("aim", {
+    id: p.id,
+    sensorQ: sample ? roundAll(sample.q) : null,
+    sensorW: sample ? roundAll(sample.w) : null,
+    sampleAgeMs: round(p.sampleAge, 1),
+    clockOffset: round(p.clockOffset, 1),
+    plane: roundAll(rawPlane),
+    predictedPlane: roundAll(predictedPlane),
+    aimPlane: roundAll(aimPlane),
+    anglesDeg: roundAll(planeToAnglesDeg(rawPlane), 3),
+    filteredDeg: roundAll(planeToAnglesDeg(aimPlane), 3),
+    rawPx: roundAll(p.raw, 1),
+    filteredPx: roundAll(p.filtered, 1),
+    predictedPx: roundAll(p.predicted, 1),
+    pxPerDeg: roundAll(pixelsPerDegree(p.homography, rawPlane, screen), 2),
+  });
+}
+
+/**
+ * Everything needed to judge a calibration after the fact: how each muzzle
+ * candidate scored, what the accepted fit maps to, and the resulting
+ * sensitivity, which is what a sluggish or lopsided crosshair shows up in.
+ */
+export function logCalibrationReport(
+  p: PlayerRuntime,
+  recentred: Quat[],
+  screen: Vec2,
+  accepted: boolean,
+): void {
+  const targets = calibTargets(screen).slice(0, recentred.length);
+  const candidates = MUZZLE_CANDIDATES.map((candidate) => {
+    const basis: AimBasis = { muzzle: candidate.muzzle, label: candidate.label };
+    const planes = recentred.map((q) => orientationToPlane(q, basis));
+    if (planes.some((plane) => !plane)) {
+      return { label: candidate.label, error: "plane undefined" };
+    }
+    const src = planes as Vec2[];
+    const H = solveHomography(src, targets);
+    const cv = crossValidateHomography(src, targets);
+    return {
+      label: candidate.label,
+      cvMaxPx: cv ? round(cv.maxError, 1) : null,
+      cvMeanPx: cv ? round(cv.meanError, 1) : null,
+      planes: src.map((s) => roundAll(s)),
+      pxPerDeg: H ? roundAll(pixelsPerDegree(H, [0, 0], screen), 2) : null,
+    };
+  });
+
+  const chosenPlanes = recentred.map((q) => orientationToPlane(q, p.aimBasis));
+  diagLog("calib_report", {
+    id: p.id,
+    accepted,
+    screen,
+    chosen: p.aimBasis.label,
+    muzzle: p.aimBasis.muzzle,
+    homography: p.homography ? roundAll(p.homography, 6) : null,
+    targets,
+    quats: recentred.map((q) => roundAll(q)),
+    rawQuats: p.calibQuats.map((q) => roundAll(q)),
+    chosenPlanes: chosenPlanes.map((s) => (s ? roundAll(s) : null)),
+    mappedPx: p.homography
+      ? chosenPlanes.map((s) =>
+          s ? roundAll(applyHomography(p.homography!, s), 1) : null,
+        )
+      : null,
+    pxPerDegCentre: roundAll(pixelsPerDegree(p.homography, [0, 0], screen), 2),
+    candidates,
+  });
 }
 
 function finishFrame(
@@ -494,9 +598,13 @@ export function samplePlane(p: PlayerRuntime): Vec2 | null {
   return orientationToPlane(q, p.aimBasis);
 }
 
+/**
+ * Captures are stored in the raw sensor frame, not the recentred one. The
+ * reference pose is only chosen once every target has been captured, so that it
+ * can be the centre target's own pose.
+ */
 export function sampleCalibQuat(p: PlayerRuntime): Quat | null {
-  if (!p.lastSample) return null;
-  return applyReferenceFrame(p.lastSample.q, p.refInverse);
+  return p.lastSample ? p.lastSample.q : null;
 }
 
 export function averageQuats(quats: Quat[]): Quat | null {
@@ -519,6 +627,25 @@ export function averageQuats(quats: Quat[]): Quat | null {
   return quatNormalize([x, y, z, w]);
 }
 
+/**
+ * Net rotation rate across a capture window, in deg/s.
+ *
+ * Spread about the mean cannot tell a steady hand apart from an estimate that is
+ * sliding at a constant rate, and a sliding estimate is exactly what makes a
+ * capture disagree with the ones around it.
+ */
+export function quatDriftRate(quats: Quat[], windowSeconds: number): number {
+  const third = Math.floor(quats.length / 3);
+  if (third < 2 || windowSeconds <= 0) return 0;
+  const first = averageQuats(quats.slice(0, third));
+  const last = averageQuats(quats.slice(-third));
+  if (!first || !last) return 0;
+  const d = quatNormalize(quatMultiply(quatConjugate(first), last));
+  const angle = 2 * Math.acos(Math.min(1, Math.abs(d[3])));
+  const baseline = windowSeconds * (2 / 3);
+  return ((angle * 180) / Math.PI) / baseline;
+}
+
 export function quatAngularSpread(quats: Quat[]): number {
   const mean = averageQuats(quats);
   if (!mean || quats.length < 2) return 0;
@@ -535,15 +662,59 @@ export function recordCalibCorner(
   p: PlayerRuntime,
   quat: Quat,
   plane: Vec2,
+  screen: Vec2,
 ): void {
   p.calibQuats.push(quat);
   p.calibRays.push(plane);
+  refreshProvisionalAim(p, screen);
+}
+
+/** Captures needed before the remaining targets can be aimed at with feedback. */
+const CALIB_PREVIEW_POINTS = 4;
+
+/**
+ * Switches aiming onto a mapping fitted from the captures so far, so the player
+ * aims the rest of the targets with a crosshair instead of by eye. Pointing a
+ * phone at a dot unaided is only good to a few degrees, which is most of the
+ * error a rejected calibration reports.
+ *
+ * The reference pose only rotates the viewing sphere, and on a gnomonic plane
+ * that is a projective change the homography absorbs exactly, so referencing an
+ * early capture here costs nothing against the final fit.
+ */
+function refreshProvisionalAim(p: PlayerRuntime, screen: Vec2): void {
+  if (p.calibQuats.length < CALIB_PREVIEW_POINTS) return;
+  const targets = calibTargets(screen);
+  const basis: AimBasis = { ...DEFAULT_AIM_BASIS };
+  const reference = referenceFrameForRecentre(p.calibQuats[0]!);
+
+  const planes: Vec2[] = [];
+  for (const q of p.calibQuats) {
+    const plane = orientationToPlane(applyReferenceFrame(q, reference), basis);
+    if (!plane) return;
+    planes.push(plane);
+  }
+  const H = solveHomography(planes, targets.slice(0, planes.length));
+  if (!H) return;
+
+  if (p.calibQuats.length === CALIB_PREVIEW_POINTS) p.filter.reset();
+  p.refInverse = reference;
+  p.hasRecentered = true;
+  p.aimBasis = basis;
+  p.homography = H;
 }
 
 export const CALIB_POINT_COUNT = 9;
 
-/** Worst tolerated leave-one-out aim error, as a fraction of screen diagonal. */
-const CALIB_MAX_ERROR_FRACTION = 0.035;
+/** Held-out error below which a fit is treated as properly calibrated. */
+const CALIB_GOOD_ERROR_FRACTION = 0.035;
+/**
+ * Above this the captures cannot describe one consistent grip and are discarded.
+ * Between the two the fit is kept and flagged: it still anchors the crosshair to
+ * absolute screen positions, which beats the uncalibrated fallback outright, and
+ * recalibrating from it is far easier than starting blind.
+ */
+const CALIB_USABLE_ERROR_FRACTION = 0.2;
 
 export function calibTargets(screen: Vec2): Vec2[] {
   return calibrationPoints(screen[0], screen[1]);
@@ -555,6 +726,8 @@ export function finishCalibration(
 ): {
   ok: boolean;
   reason?: string;
+  /** Accepted, but loose enough to be worth redoing. */
+  rough?: boolean;
   /** Leave-one-out aim error in pixels. */
   errorPx: number;
   worstIndex: number;
@@ -571,8 +744,17 @@ export function finishCalibration(
   }
 
   const used = targets.slice(0, p.calibQuats.length);
-  const fit = detectAimBasis(p.calibQuats, used);
+  // The centre target is captured last, and referencing every capture to that
+  // pose puts the screen centre at plane (0,0). Plane coordinates then stay
+  // small and symmetric instead of running out towards the 90-degree
+  // singularity, and a later recentre lands the crosshair mid-screen, which is
+  // what the homography already maps plane (0,0) to.
+  const reference = referenceFrameForRecentre(p.calibQuats[p.calibQuats.length - 1]!);
+  const recentred = p.calibQuats.map((q) => applyReferenceFrame(q, reference));
+
+  const fit = detectAimBasis(recentred, used);
   if (!fit) {
+    logCalibrationReport(p, recentred, screen, false);
     p.calibRays = [];
     p.calibQuats = [];
     return {
@@ -583,9 +765,14 @@ export function finishCalibration(
     };
   }
 
-  const worstIndex = worstCalibPoint(p, fit.basis, used);
-  const limit = Math.hypot(screen[0], screen[1]) * CALIB_MAX_ERROR_FRACTION;
-  if (fit.maxError > limit) {
+  const worstIndex = worstCalibPoint(recentred, fit.basis, used);
+  const diagonal = Math.hypot(screen[0], screen[1]);
+  if (fit.maxError > diagonal * CALIB_USABLE_ERROR_FRACTION) {
+    p.aimBasis = fit.basis;
+    p.homography = fit.H;
+    logCalibrationReport(p, recentred, screen, false);
+    p.homography = null;
+    p.aimBasis = { ...DEFAULT_AIM_BASIS };
     p.calibRays = [];
     p.calibQuats = [];
     return {
@@ -595,14 +782,19 @@ export function finishCalibration(
       worstIndex,
     };
   }
+  const rough = fit.maxError > diagonal * CALIB_GOOD_ERROR_FRACTION;
 
+  p.refInverse = reference;
+  p.hasRecentered = true;
   p.aimBasis = fit.basis;
   p.gripLabel = fit.basis.label;
   p.homography = fit.H;
   p.calibrating = false;
   p.filter.reset();
+  logCalibrationReport(p, recentred, screen, true);
   return {
     ok: true,
+    rough,
     errorPx: fit.maxError,
     worstIndex,
     gripLabel: fit.basis.label,
@@ -610,11 +802,11 @@ export function finishCalibration(
 }
 
 function worstCalibPoint(
-  p: PlayerRuntime,
+  quats: Quat[],
   basis: AimBasis,
   targets: Vec2[],
 ): number {
-  const planes = p.calibQuats.map((q) => orientationToPlane(q, basis));
+  const planes = quats.map((q) => orientationToPlane(q, basis));
   if (planes.some((plane) => !plane)) return 0;
   const cv = crossValidateHomography(planes as Vec2[], targets);
   if (!cv) return 0;

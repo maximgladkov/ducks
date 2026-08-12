@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -126,8 +126,67 @@ async function serveFile(
   }
 }
 
+const diagLogPath = process.env.DIAG_LOG ?? path.join(root, "debug-log.jsonl");
+const DIAG_LOG_MAX_BYTES = 32 * 1024 * 1024;
+let diagLogBytes = 0;
+
+function readBody(req: import("node:http").IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 4 * 1024 * 1024) reject(new Error("body too large"));
+    });
+    req.on("end", () => resolve(body));
+    req.on("error", reject);
+  });
+}
+
+async function handleDiagLog(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+): Promise<void> {
+  try {
+    const parsed = JSON.parse(await readBody(req)) as {
+      reset?: boolean;
+      records?: unknown[];
+    };
+    const lines = (parsed.records ?? [])
+      .map((r) => JSON.stringify(r))
+      .join("\n");
+    const payload = lines ? `${lines}\n` : "";
+    if (parsed.reset) {
+      diagLogBytes = payload.length;
+      await writeFile(diagLogPath, payload);
+    } else if (payload && diagLogBytes < DIAG_LOG_MAX_BYTES) {
+      diagLogBytes += payload.length;
+      await appendFile(diagLogPath, payload);
+    }
+    res.writeHead(204, { "access-control-allow-origin": "*" }).end();
+  } catch {
+    res.writeHead(400, { "access-control-allow-origin": "*" }).end();
+  }
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+  if (url.pathname === "/debug/log") {
+    if (req.method === "OPTIONS") {
+      res
+        .writeHead(204, {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "POST, OPTIONS",
+          "access-control-allow-headers": "content-type",
+        })
+        .end();
+      return;
+    }
+    if (req.method === "POST") {
+      await handleDiagLog(req, res);
+      return;
+    }
+  }
 
   if (url.pathname === "/health" || url.pathname === "/api/health") {
     res.writeHead(200, { "content-type": "application/json" });

@@ -8,6 +8,7 @@ import {
   orientationToPlane,
   planeToAnglesDeg,
   predictOrientation,
+  predictOrientationSafe,
   quatConjugate,
   quatFromAxisAngle,
   quatMultiply,
@@ -139,6 +140,36 @@ describe("predictOrientation", () => {
     expect(recovered[1]!).toBeCloseTo(w[1]!, 8);
     expect(recovered[2]!).toBeCloseTo(w[2]!, 8);
   });
+
+  // An orientation source may hand back either sign of the same rotation. Read
+  // literally a flip looks like most of a full turn in one frame, which is how a
+  // phone lying still ends up reporting hundreds of radians per second.
+  it("reads a negated quaternion as the same rotation, not a full turn", () => {
+    const q0 = quatFromAxisAngle([0.2, -0.4, 0.6], 1.1);
+    const w: Vec3 = [0.3, 0.5, -0.2];
+    const dt = 1 / 60;
+    const q1 = predictOrientation(q0, w, dt);
+    const flipped = q1.map((v) => -v) as Quat;
+
+    const recovered = angularVelocityFromQuats(q0, flipped, dt);
+    expect(recovered[0]!).toBeCloseTo(w[0]!, 8);
+    expect(recovered[1]!).toBeCloseTo(w[1]!, 8);
+    expect(recovered[2]!).toBeCloseTo(w[2]!, 8);
+  });
+
+  it("reports no motion when a still phone flips sign", () => {
+    const q = quatFromAxisAngle([0.1, 0.9, -0.3], 0.6);
+    const rate = angularVelocityFromQuats(q, q.map((v) => -v) as Quat, 1 / 60);
+    expect(Math.hypot(...rate)).toBeLessThan(1e-6);
+  });
+
+  // Defence in depth: a bad rate must never extrapolate the aim off-screen.
+  it("clamps a physically impossible rate instead of extrapolating it", () => {
+    const q = quatNormalize([0, 0, 0, 1]);
+    const wild = predictOrientationSafe(q, [-313, -2.7, 0.07], 0.025);
+    const travelDeg = (2 * Math.acos(Math.min(1, Math.abs(wild[3]!))) * 180) / Math.PI;
+    expect(travelDeg).toBeLessThan(30);
+  });
 });
 
 describe("aim plane", () => {
@@ -172,9 +203,39 @@ describe("aim plane", () => {
     expect(back[1]).toBeCloseTo(plane[1], 8);
   });
 
-  // Which plane axis a rotation lands on depends on the basis derived from the
-  // muzzle, and calibration is what ties those axes to the screen. The physically
-  // meaningful invariant is the radius: it is the tangent of the off-axis angle.
+  // Calibration absorbs a rotated basis, so a swap here stays invisible until
+  // something uncalibrated relies on it and up starts moving the cursor sideways.
+  it("puts horizontal aim on the first axis and vertical on the second", () => {
+    for (const deg of [5, 20, 35]) {
+      const yawed = quatNormalize(quatFromAxisAngle([0, 0, 1], d2r(deg)));
+      const yawPlane = orientationToPlane(yawed, DEFAULT_AIM_BASIS)!;
+      expect(Math.abs(yawPlane[0]!)).toBeCloseTo(Math.tan(d2r(deg)), 8);
+      expect(yawPlane[1]!).toBeCloseTo(0, 8);
+
+      const pitched = quatNormalize(quatFromAxisAngle([1, 0, 0], d2r(deg)));
+      const pitchPlane = orientationToPlane(pitched, DEFAULT_AIM_BASIS)!;
+      expect(pitchPlane[0]!).toBeCloseTo(0, 8);
+      expect(Math.abs(pitchPlane[1]!)).toBeCloseTo(Math.tan(d2r(deg)), 8);
+    }
+  });
+
+  // Screen coordinates grow downwards, so the vertical axis has to as well or an
+  // uncalibrated crosshair moves opposite to the hand holding the phone.
+  it("grows rightwards and downwards like screen coordinates", () => {
+    const up = orientationToPlane(
+      quatNormalize(quatFromAxisAngle([1, 0, 0], d2r(20))),
+      DEFAULT_AIM_BASIS,
+    )!;
+    expect(up[1]!).toBeLessThan(0);
+
+    // Turning anticlockwise seen from above swings the barrel to the player's left.
+    const left = orientationToPlane(
+      quatNormalize(quatFromAxisAngle([0, 0, 1], d2r(20))),
+      DEFAULT_AIM_BASIS,
+    )!;
+    expect(left[0]!).toBeLessThan(0);
+  });
+
   it("reports plane radius as the true off-axis angle", () => {
     for (const deg of [3, 17, 40]) {
       for (const axis of [[0, 0, 1], [1, 0, 0]] as const) {

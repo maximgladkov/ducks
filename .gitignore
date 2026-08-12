@@ -7,6 +7,8 @@ dist
 .env.*
 !.env.example
 *.log
+debug-log*.jsonl
+analyze-*.mjs
 .vite
 coverage
 TV_URL.txt

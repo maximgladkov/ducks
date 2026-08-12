@@ -16,6 +16,7 @@ import {
   loadSettings,
   averageQuats,
   quatAngularSpread,
+  quatDriftRate,
   recordCalibCorner,
   removePlayer,
   sampleCalibQuat,
@@ -54,6 +55,7 @@ import {
   drawMeadowFg,
   playfieldHeight,
 } from "./scene";
+import { diagLog, diagStart, roundAll } from "./diag";
 
 let sprites: SpriteBank | null = null;
 let dogShow: { mode: "laugh" | "got"; t: number; playerId: string } | null =
@@ -72,6 +74,12 @@ const debugEl = document.getElementById("debug")!;
 const toggleDebug = document.getElementById("toggle-debug")!;
 
 let settings = loadSettings();
+diagStart({
+  userAgent: navigator.userAgent,
+  screen: [window.innerWidth, window.innerHeight],
+  devicePixelRatio: window.devicePixelRatio,
+  settings,
+});
 const players = new Map<string, PlayerRuntime>();
 const peers = new Map<string, HostPeer>();
 let targets: Target[] = [];
@@ -94,6 +102,12 @@ let calibCapture: {
 const CALIB_CAPTURE_MS = 350;
 const CALIB_MIN_SAMPLES = 12;
 const CALIB_MAX_ANGLE_SPREAD = 0.06;
+/**
+ * A settled estimate drifts well under a degree per second, while one still
+ * walking out a bad seed slides an order of magnitude faster.
+ */
+const CALIB_MAX_DRIFT_DEG_PER_SEC = 3;
+const SENSOR_SETTLE_TIMEOUT_MS = 10000;
 
 function screenSize(): [number, number] {
   return [canvas.clientWidth, canvas.clientHeight];
@@ -250,6 +264,35 @@ function refillPlayerShots(playerId: string): void {
   }
 }
 
+/**
+ * Calibrating before the phone's attitude estimate has settled bakes the tail of
+ * that transient into the reference pose and the first few captures, which is
+ * unrecoverable: every later target is measured against a frame that was still
+ * moving.
+ */
+function waitForSensors(playerId: string, since: number): void {
+  const p = players.get(playerId);
+  const peer = peers.get(playerId);
+  if (!p || !peer) return;
+  const waited = performance.now() - since;
+  if (p.sensorReady || waited > SENSOR_SETTLE_TIMEOUT_MS) {
+    diagLog("sensors_ready", {
+      id: playerId,
+      waitedMs: Math.round(waited),
+      converged: p.sensorReady,
+      tiltDeg: Number(p.sensorTiltDeg.toFixed(2)),
+    });
+    startCalibration(playerId);
+    return;
+  }
+  setCalibBanner("Hold the phone steady in your aiming grip — sensors settling…");
+  peer.send({
+    type: "status",
+    text: "Hold steady in your aiming grip — settling sensors",
+  });
+  window.setTimeout(() => waitForSensors(playerId, since), 250);
+}
+
 function startCalibration(playerId: string): void {
   const p = players.get(playerId);
   const peer = peers.get(playerId);
@@ -257,6 +300,12 @@ function startCalibration(playerId: string): void {
   calibratingPlayerId = playerId;
   calibCapture = null;
   beginCalibration(p);
+  diagLog("calib_start", {
+    id: playerId,
+    screen: screenSize(),
+    targets: calibTargets(screenSize()),
+    refInverse: roundAll(p.refInverse),
+  });
   showCalibCorner(0);
   peer.send({
     type: "status",
@@ -305,14 +354,41 @@ function completeCalibCapture(p: PlayerRuntime): void {
     );
     return;
   }
+  const driftRate = quatDriftRate(quats, CALIB_CAPTURE_MS / 1000);
+  if (driftRate > CALIB_MAX_DRIFT_DEG_PER_SEC) {
+    diagLog("calib_reject", {
+      id: p.id,
+      index: p.calibQuats.length,
+      driftDegPerSec: Number(driftRate.toFixed(2)),
+      spreadDeg: Number((((angleSpread * 180) / Math.PI)).toFixed(2)),
+    });
+    peer.send({
+      type: "status",
+      text: `Sensors still settling (${driftRate.toFixed(1)}°/s) — hold steady and retry`,
+    });
+    setCalibBanner(
+      `Sensors still settling (${driftRate.toFixed(1)}°/s drift) — hold steady and retry this target`,
+    );
+    return;
+  }
   const meanPlane = averageVec2(samples);
   const meanQuat = averageQuats(quats);
   if (!meanQuat) {
     peer.send({ type: "status", text: "Bad sample — try again" });
     return;
   }
-  recordCalibCorner(p, meanQuat, meanPlane ?? [0, 0]);
+  recordCalibCorner(p, meanQuat, meanPlane ?? [0, 0], screenSize());
   const n = p.calibQuats.length;
+  diagLog("calib_capture", {
+    id: p.id,
+    index: n - 1,
+    target: calibTargets(screenSize())[n - 1] ?? null,
+    quat: roundAll(meanQuat),
+    plane: meanPlane ? roundAll(meanPlane) : null,
+    spreadDeg: Number((((quatAngularSpread(quats) * 180) / Math.PI)).toFixed(2)),
+    samples: quats.length,
+    aimPx: roundAll(p.aim, 1),
+  });
   peer.send({
     type: "status",
     text: `Target ${n}/${CALIB_POINT_COUNT} locked (${((angleSpread * 180) / Math.PI).toFixed(1)}°)`,
@@ -328,17 +404,19 @@ function completeCalibCapture(p: PlayerRuntime): void {
     return;
   }
   const result = finishCalibration(p, screenSize());
+  diagLog("calib_result", { id: p.id, ...result });
   hideCalibCorner();
   calibratingPlayerId = null;
+  const quality = result.rough ? "rough — redo for tighter aim" : "OK";
   const summary = result.ok
-    ? `OK · ${result.gripLabel} · accuracy ±${result.errorPx.toFixed(0)}px`
+    ? `${quality} · ${result.gripLabel} · accuracy ±${result.errorPx.toFixed(0)}px`
     : result.reason;
   peer.send({ type: "calib_done", ok: result.ok, reason: summary });
   peer.send({ type: "ammo", shots: p.shots });
   syncHudShotsFrom(p.id);
   setCalibBanner(
     result.ok
-      ? `Calibration OK · grip: ${result.gripLabel} · held-out accuracy ±${result.errorPx.toFixed(0)}px`
+      ? `Calibration ${quality} · grip: ${result.gripLabel} · held-out accuracy ±${result.errorPx.toFixed(0)}px`
       : result.reason ?? "Calibration failed",
   );
   window.setTimeout(() => setCalibBanner(null), 5000);
@@ -530,7 +608,19 @@ function addPlayer(playerId: string): void {
 
   const peer = new HostPeer(playerId, send, {
     onSample: ({ sample }) => ingestSample(p, sample, settings),
+    onDiag: ({ diag }) => {
+      p.sensorReady = diag.converged;
+      p.sensorTiltDeg = diag.tiltResidualDeg;
+      diagLog("controller", { id: playerId, ...diag });
+    },
     onEvent: ({ event }) => {
+      diagLog("input", {
+        id: playerId,
+        event: event.type,
+        seq: event.seq,
+        calibrating: p.calibrating,
+        aimPx: roundAll(p.aim, 1),
+      });
       if (p.calibrating) {
         handlePlayerEvent(
           p,
@@ -590,7 +680,7 @@ function addPlayer(playerId: string): void {
   });
   peers.set(playerId, peer);
   void peer.startOffer().then(() => {
-    window.setTimeout(() => startCalibration(playerId), 500);
+    waitForSensors(playerId, performance.now());
   });
   renderPlayers();
   renderScoreboard();

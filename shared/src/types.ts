@@ -27,6 +27,21 @@ export type ControllerEvent = {
   seq: number;
 };
 
+export type ControllerDiagnostics = {
+  mode: string;
+  stationary: boolean;
+  biasDegPerSec: number;
+  accelSign: number;
+  screenAngle: number;
+  emitHz: number;
+  /** False while the attitude estimate is still settling; aim is meaningless. */
+  converged: boolean;
+  /** Disagreement between the estimate and its reference, in degrees. */
+  tiltResidualDeg: number;
+  /** Which rotationRate axis labelling the platform turned out to use. */
+  gyroConvention: string;
+};
+
 export type ClockPing = {
   type: "clock_ping";
   t0: number;
@@ -50,6 +65,7 @@ export type HostToControllerMessage =
 export type ControllerToHostPayload =
   | { kind: "sample"; sample: ControllerSample }
   | { kind: "event"; event: ControllerEvent }
+  | { kind: "diag"; diag: ControllerDiagnostics }
   | ClockPing
   | ClockPong;
 
@@ -123,9 +139,17 @@ export function colorForPlayer(index: number): string {
  */
 export const DEFAULT_DEBUG_SETTINGS = {
   minCutoff: 1,
-  beta: 0.05,
+  // The adaptive cutoff is what trades lag against jitter, so it carries the
+  // responsiveness on its own: high enough to open up as soon as the hand moves.
+  beta: 0.12,
   predictionHorizonMs: 25,
-  filterLeadGain: 1,
+  /**
+   * Off, because latency belongs to prediction, which uses a measured rate.
+   * Leading by the filter's own lag instead overshoots and then unwinds: the lag
+   * peaks just as the hand slows, so the crosshair keeps going, then creeps back
+   * towards the middle for over a second.
+   */
+  filterLeadGain: 0,
   aimAssistRadius: 20,
   sensitivity: 900,
   predictionEnabled: true,

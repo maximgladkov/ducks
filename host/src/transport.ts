@@ -13,6 +13,7 @@ import {
 export type PeerHandlers = {
   onSample?: (payload: Extract<ControllerToHostPayload, { kind: "sample" }>) => void;
   onEvent?: (payload: Extract<ControllerToHostPayload, { kind: "event" }>) => void;
+  onDiag?: (payload: Extract<ControllerToHostPayload, { kind: "diag" }>) => void;
   onHostMessage?: (msg: HostToControllerMessage) => void;
   onTransport?: (kind: TransportKind) => void;
   onClock?: (offset: number, rtt: number) => void;
@@ -196,6 +197,10 @@ export class HostPeer {
     }
     if ("kind" in data && data.kind === "event") {
       this.handlers.onEvent?.(data);
+      return;
+    }
+    if ("kind" in data && data.kind === "diag") {
+      this.handlers.onDiag?.(data);
       return;
     }
     if (data.type === "clock_pong") {

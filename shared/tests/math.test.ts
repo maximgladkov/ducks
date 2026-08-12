@@ -13,6 +13,7 @@ import {
   rayToNormalizedPlane,
 } from "../src/quat.js";
 import { OneEuroFilter2D } from "../src/oneEuro.js";
+import { DEFAULT_DEBUG_SETTINGS } from "../src/types.js";
 import {
   clockOffsetFromExchange,
   estimateClockOffset,
@@ -92,6 +93,47 @@ describe("one euro", () => {
       [x] = f.filter(200, 100, i / 60);
     }
     expect(x).toBeGreaterThan(100);
+  });
+
+  /**
+   * Sweep to a target and stop dead on it, which is what aiming at a duck is.
+   * Returns where the crosshair is drawn over the second after the hand stops.
+   */
+  function sweepThenHold(leadGain: number): number[] {
+    const f = new OneEuroFilter2D({ ...DEFAULT_DEBUG_SETTINGS });
+    f.setParams({ minCutoff: 1, beta: DEFAULT_DEBUG_SETTINGS.beta });
+    const held = 30;
+    let i = 0;
+    for (; i < 60; i++) {
+      f.filterWithLead((held * i) / 60, 0, i / 60, leadGain);
+    }
+    const after: number[] = [];
+    for (; i < 120; i++) {
+      after.push(f.filterWithLead(held, 0, i / 60, leadGain)[0]);
+    }
+    return after;
+  }
+
+  it("settles onto a held aim without drifting back afterwards", () => {
+    const after = sweepThenHold(0);
+    expect(Math.abs(after[after.length - 1]! - 30)).toBeLessThan(0.2);
+    // Whatever remains must be gone quickly, not creeping for a second.
+    expect(Math.abs(after[18]! - 30)).toBeLessThan(0.5);
+    expect(Math.max(...after)).toBeLessThan(30.5);
+  });
+
+  // Why the lead is off by default: the filter's lag peaks as the hand slows, so
+  // the lead outlives the movement and hauls the crosshair back afterwards.
+  it("overshoots and unwinds for a long time when led by its own lag", () => {
+    const led = sweepThenHold(1);
+    expect(Math.max(...led)).toBeGreaterThan(31);
+
+    // Frames drawn beyond the target after the hand stopped: this is the slow
+    // creep back towards the middle, and it should not survive at all unled.
+    const overshootFrames = (samples: number[]) =>
+      samples.filter((v) => v > 30.3).length;
+    expect(overshootFrames(led)).toBeGreaterThan(10);
+    expect(overshootFrames(sweepThenHold(0))).toBe(0);
   });
 });
 

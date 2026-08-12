@@ -127,6 +127,9 @@ export function dot3(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+/** The fused world frame keeps z opposite gravity. */
+export const WORLD_UP: Vec3 = [0, 0, 1];
+
 /**
  * Which device axis the player treats as the barrel. Axis flips and swaps are
  * deliberately absent: they are linear, so the calibration homography absorbs
@@ -160,17 +163,17 @@ export function rayToPlaneWithMuzzle(
   const depth = dot3(ray, forward);
   if (Math.abs(depth) < 1e-3) return null;
 
-  let helper: Vec3 = Math.abs(forward[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
-  let right = normalize3(cross3(helper, forward));
-  if (!right) {
-    helper = [0, 0, 1];
-    right = normalize3(cross3(helper, forward));
-  }
+  // Anchored to world up so the axes come out as screen right and screen down.
+  // Deriving them from whichever helper vector happens to be least parallel
+  // instead leaves them rotated by an arbitrary amount: calibration absorbs that,
+  // but every uncalibrated path and every log reads as though the axes are swapped.
+  let right = normalize3(cross3(forward, WORLD_UP));
+  if (!right) right = normalize3(cross3(forward, [0, 1, 0]));
   if (!right) return null;
-  const up = normalize3(cross3(forward, right));
-  if (!up) return null;
+  const down = normalize3(cross3(forward, right));
+  if (!down) return null;
 
-  return [dot3(ray, right) / depth, dot3(ray, up) / depth];
+  return [dot3(ray, right) / depth, dot3(ray, down) / depth];
 }
 
 export function orientationToPlane(
@@ -215,8 +218,15 @@ export function angularVelocityFromQuats(
   dt: number,
 ): Vec3 {
   if (dt <= 1e-6) return [0, 0, 0];
-  const dq = quatMultiply(quatConjugate(q0), q1);
-  const [x, y, z, w] = quatNormalize(dq);
+  const dq = quatNormalize(quatMultiply(quatConjugate(q0), q1));
+  // A quaternion and its negation are the same rotation, and orientation sources
+  // flip between them freely. Taken at face value a flip reads as very nearly a
+  // full turn, so a motionless phone reports a huge rate for one sample.
+  const flip = dq[3] < 0 ? -1 : 1;
+  const x = dq[0] * flip;
+  const y = dq[1] * flip;
+  const z = dq[2] * flip;
+  const w = dq[3] * flip;
   const sinHalf = Math.hypot(x, y, z);
   if (sinHalf < 1e-8) return [0, 0, 0];
   const angle = 2 * Math.atan2(sinHalf, w);
@@ -299,13 +309,21 @@ export function predictOrientationSafe(
   q: Quat,
   w: Vec3,
   dtSec: number,
-  opts: { maxDtSec?: number; minSpeed?: number } = {},
+  opts: { maxDtSec?: number; minSpeed?: number; maxSpeed?: number } = {},
 ): Quat {
   const maxDt = opts.maxDtSec ?? 0.06;
   const minSpeed = opts.minSpeed ?? 0.35;
+  // Roughly the fastest a wrist can flick. Anything beyond it is a glitch in the
+  // rate rather than a movement, and extrapolating it throws the crosshair clear
+  // across the screen.
+  const maxSpeed = opts.maxSpeed ?? 20;
   const dt = Math.min(Math.max(dtSec, 0), maxDt);
   const speed = Math.hypot(w[0], w[1], w[2]);
   if (speed < minSpeed || dt < 1e-4) return quatNormalize(q);
+  if (speed > maxSpeed) {
+    const k = maxSpeed / speed;
+    return predictOrientation(q, [w[0] * k, w[1] * k, w[2] * k], dt);
+  }
   return predictOrientation(q, w, dt);
 }
 

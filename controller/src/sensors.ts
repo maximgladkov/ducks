@@ -1,4 +1,5 @@
 import {
+  GyroAxisDetector,
   OrientationFusion,
   angularVelocityFromQuats,
   deviceOrientationToQuaternion,
@@ -57,10 +58,15 @@ export class MotionPipeline {
   private gyro: GyroscopeLike | null = null;
   private fusion = new OrientationFusion();
   private fusionActive = false;
+  private gyroAxes = new GyroAxisDetector();
   private eulerQ: Quat | null = null;
+  private eulerRate: Vec3 = [0, 0, 0];
+  private lastEulerT = 0;
   private lastRawQ: Quat = quatIdentity();
+  private rateSmoothed: Vec3 = [0, 0, 0];
   private lastMotionT = 0;
   private lastEmitT = 0;
+  private emitHz = 0;
   private screenAngle = 0;
   private running = false;
   private usingDeviceOrientation = false;
@@ -79,13 +85,26 @@ export class MotionPipeline {
     stationary: boolean;
     biasDegPerSec: number;
     accelSign: number;
+    screenAngle: number;
+    emitHz: number;
+    converged: boolean;
+    tiltResidualDeg: number;
+    gyroConvention: string;
   } {
     const bias = this.fusion.biasEstimate();
+    // Only the fusion path has a settling transient; a platform-supplied
+    // attitude is trustworthy from its first reading.
+    const fused = this.mode === "fusion";
     return {
       mode: this.mode,
       stationary: this.fusion.isStationary(),
       biasDegPerSec: Math.hypot(bias[0], bias[1], bias[2]) / DEG,
       accelSign: this.fusion.accelSignConvention(),
+      screenAngle: this.screenAngle,
+      emitHz: this.emitHz,
+      converged: fused ? this.fusion.isConverged() : this.mode !== "starting",
+      tiltResidualDeg: fused ? this.fusion.tiltResidualDeg() : 0,
+      gyroConvention: this.gyroAxes.report(),
     };
   }
 
@@ -233,13 +252,19 @@ export class MotionPipeline {
   private onDeviceOrientation = (ev: DeviceOrientationEvent): void => {
     if (ev.alpha == null || ev.beta == null || ev.gamma == null) return;
     const q = deviceOrientationToQuaternion(ev.alpha, ev.beta, ev.gamma);
-    this.eulerQ = q;
+    const t = this.timestampOf(ev.timeStamp);
 
-    // Once fusion is running this only supplies the absolute attitude that
-    // seeds it and resolves the platform's accelerometer sign.
+    // The rate this attitude implies is the yardstick the raw gyroscope triple
+    // is measured against, which is how the platform's axis labelling is found.
+    if (this.eulerQ && this.lastEulerT > 0) {
+      const dt = (t - this.lastEulerT) / 1000;
+      if (dt > 1e-3) this.eulerRate = angularVelocityFromQuats(this.eulerQ, q, dt);
+    }
+    this.eulerQ = q;
+    this.lastEulerT = t;
+
     if (this.fusionActive) return;
 
-    const t = this.timestampOf(ev.timeStamp);
     const dt = this.lastEmitT > 0 ? (t - this.lastEmitT) / 1000 : 1 / 60;
     const w = angularVelocityFromQuats(this.lastRawQ, q, Math.max(1e-3, dt));
     this.emit(q, w, t);
@@ -252,8 +277,9 @@ export class MotionPipeline {
       return;
     }
 
-    // rotationRate reports alpha about z, beta about x and gamma about y.
-    const gyro: Vec3 = [rate.beta * DEG, rate.gamma * DEG, rate.alpha * DEG];
+    // Kept in the platform's own labelling; which axis each belongs to is
+    // decided from evidence rather than assumed.
+    const raw: Vec3 = [rate.alpha * DEG, rate.beta * DEG, rate.gamma * DEG];
     const accel: Vec3 | null =
       accelRaw && accelRaw.x != null && accelRaw.y != null && accelRaw.z != null
         ? [accelRaw.x, accelRaw.y, accelRaw.z]
@@ -266,25 +292,44 @@ export class MotionPipeline {
         : (ev.interval || 1000 / 60) / 1000;
     this.lastMotionT = t;
 
-    if (!accel) {
-      if (!this.fusionActive) return;
-      this.emit(this.fusion.update(gyro, null, dt), this.fusion.rate(gyro), t);
+    if (this.eulerQ) {
+      this.gyroAxes.observe(raw, this.eulerRate);
+      if (accel) this.fusion.observeAccelSign(this.eulerQ, accel);
+
+      // Until the labelling is known the gyroscope would push the estimate along
+      // the wrong axes, so the platform's own attitude is used untouched. Adding
+      // a filter that can only lag behind it would trade accuracy for latency.
+      if (!this.gyroAxes.convention()) {
+        if (this.fusionActive) {
+          this.fusionActive = false;
+          this.setMode("device-orientation");
+        }
+        return;
+      }
+
+      if (!this.fusionActive) {
+        this.fusionActive = true;
+        this.setMode("fusion");
+      }
+      const gyro = this.gyroAxes.map(raw);
+      this.emit(
+        this.fusion.updateWithReference(gyro, this.eulerQ, dt, 1),
+        this.fusion.rate(gyro),
+        t,
+      );
       return;
     }
 
-    if (this.eulerQ) {
-      this.fusion.observeAccelSign(this.eulerQ, accel);
-      if (!this.fusion.isSeeded()) this.fusion.seed(this.eulerQ);
-    }
-    if (!this.fusion.isSeeded()) return;
+    const gyro = this.gyroAxes.map(raw);
 
+    // No platform attitude to lean on: fall back to gravity, which cannot
+    // constrain heading but keeps tilt honest.
+    if (!accel || !this.fusion.isSeeded()) return;
     if (!this.fusionActive) {
       this.fusionActive = true;
       this.setMode("fusion");
     }
-
-    const q = this.fusion.update(gyro, accel, dt);
-    this.emit(q, this.fusion.rate(gyro), t);
+    this.emit(this.fusion.update(gyro, accel, dt), this.fusion.rate(gyro), t);
   };
 
   /**
@@ -300,10 +345,36 @@ export class MotionPipeline {
   private emit(q: Quat, w: Vec3, t: number): void {
     if (!this.running) return;
     if (this.lastEmitT > 0 && t - this.lastEmitT < 1000 / MAX_EMIT_HZ) return;
+    const dt = this.lastEmitT > 0 ? (t - this.lastEmitT) / 1000 : 1 / 60;
+    if (this.lastEmitT > 0) {
+      const hz = 1000 / Math.max(1, t - this.lastEmitT);
+      this.emitHz = this.emitHz === 0 ? hz : this.emitHz * 0.9 + hz * 0.1;
+    }
     this.lastRawQ = q;
     this.lastEmitT = t;
-    const framed = toScreenFrame(q, w, this.screenAngle);
+    const framed = toScreenFrame(q, this.smoothRate(w, dt), this.screenAngle);
     this.handlers.onSample(framed.q, framed.w, t);
+  }
+
+  /**
+   * Takes the edge off the rate before the host extrapolates with it.
+   *
+   * Without a usable gyroscope the rate has to be differentiated from an attitude
+   * that arrives quantised, and differentiating quantisation turns a still hand
+   * into a few degrees per second of noise. The host multiplies that by its
+   * prediction horizon, so the crosshair wanders even though the phone has not
+   * moved. The time constant stays near the horizon itself: long enough to bury
+   * the noise, short enough not to lag a real flick.
+   */
+  private smoothRate(w: Vec3, dtSec: number): Vec3 {
+    const tau = 0.04;
+    const a = 1 - Math.exp(-Math.max(1e-4, Math.min(0.25, dtSec)) / tau);
+    this.rateSmoothed = [
+      this.rateSmoothed[0] + (w[0] - this.rateSmoothed[0]) * a,
+      this.rateSmoothed[1] + (w[1] - this.rateSmoothed[1]) * a,
+      this.rateSmoothed[2] + (w[2] - this.rateSmoothed[2]) * a,
+    ];
+    return this.rateSmoothed;
   }
 }
 

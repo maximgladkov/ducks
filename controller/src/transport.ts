@@ -1,4 +1,5 @@
 import type {
+  ControllerDiagnostics,
   ControllerEvent,
   ControllerSample,
   ControllerToHostPayload,
@@ -134,6 +135,10 @@ export class ControllerSession {
   sendEvent(event: ControllerEvent): void {
     const payload: ControllerToHostPayload = { kind: "event", event };
     this.sendPayload(payload, true);
+  }
+
+  sendDiag(diag: ControllerDiagnostics): void {
+    this.sendPayload({ kind: "diag", diag }, true);
   }
 
   private sendPayload(payload: ControllerToHostPayload, reliable: boolean): void {

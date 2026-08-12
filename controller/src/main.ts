@@ -122,9 +122,12 @@ window.setInterval(() => {
   if (!motionEnabled) return;
   const d = motion.getDiagnostics();
   const sign = d.accelSign === 0 ? "?" : d.accelSign > 0 ? "spec" : "inverted";
-  sensorEl.textContent = `${d.mode} · bias ${d.biasDegPerSec.toFixed(2)}°/s · ${
+  sensorEl.textContent = `${d.mode} · ${d.emitHz.toFixed(0)}Hz · ${
+    d.converged ? "ready" : `settling ${d.tiltResidualDeg.toFixed(0)}°`
+  } · gyro ${d.gyroConvention} · bias ${d.biasDegPerSec.toFixed(2)}°/s · ${
     d.stationary ? "still" : "moving"
   } · accel ${sign}`;
+  session.sendDiag(d);
 }, 500);
 
 enableBtn.addEventListener("click", async () => {
