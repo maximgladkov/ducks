@@ -186,7 +186,7 @@ function showCalibCorner(seq: number): void {
   if (!calibMarker) {
     calibMarker = document.createElement("div");
     calibMarker.className = "calib-target";
-    document.getElementById("overlay")!.appendChild(calibMarker);
+    document.getElementById("calib-layer")!.appendChild(calibMarker);
   }
   calibMarker.style.left = `${c[0]}px`;
   calibMarker.style.top = `${c[1]}px`;
