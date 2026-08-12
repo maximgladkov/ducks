@@ -7,6 +7,9 @@
     "host",
     "controller"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node scripts/start.mjs",
     "tv": "node scripts/start.mjs",
