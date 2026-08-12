@@ -1,25 +1,128 @@
 import type { Vec2 } from "./types.js";
 
+/**
+ * Eases the crosshair towards nearby targets.
+ *
+ * Stateless on purpose: the pull depends only on where the crosshair and the
+ * targets are, so it behaves the same at any frame rate and cannot accumulate.
+ *
+ * Every target within reach contributes, weighted by how close it is, rather than
+ * the closest one winning outright. Picking a single winner makes the pull jump
+ * the moment two ducks swap places for nearest, which reads as the crosshair
+ * flicking between them. The weighting also eases in smoothly at the edge of the
+ * radius instead of switching on, so there is no line on screen where the aim
+ * visibly starts being helped.
+ */
 export function aimAssistPull(
   aim: Vec2,
   targets: Array<{ x: number; y: number; radius: number }>,
   assistRadius: number,
+  pullGain = 0.5,
 ): Vec2 {
   if (assistRadius <= 0 || targets.length === 0) return aim;
-  let best: { x: number; y: number; d: number } | null = null;
+
+  let dx = 0;
+  let dy = 0;
+  let total = 0;
+  let strongest = 0;
   for (const t of targets) {
-    const d = Math.hypot(aim[0] - t.x, aim[1] - t.y) - t.radius;
-    if (d <= assistRadius && (best === null || d < best.d)) {
-      best = { x: t.x, y: t.y, d };
+    const gap = Math.hypot(aim[0] - t.x, aim[1] - t.y) - t.radius;
+    if (gap >= assistRadius) continue;
+    const near = 1 - Math.max(0, gap) / assistRadius;
+    const w = near * near * (3 - 2 * near);
+    dx += (t.x - aim[0]) * w;
+    dy += (t.y - aim[1]) * w;
+    total += w;
+    strongest = Math.max(strongest, w);
+  }
+  if (total <= 0) return aim;
+
+  // Direction from the weighted blend, but strength from the best target, so one
+  // distant duck cannot drag the aim as hard as one under the crosshair.
+  const gain = pullGain * strongest;
+  let offsetX = (dx / total) * gain;
+  let offsetY = (dy / total) * gain;
+
+  // Large sprites sit far from their own centre, and the player should never feel
+  // the crosshair leave their hand.
+  const cap = assistRadius * 0.5;
+  const moved = Math.hypot(offsetX, offsetY);
+  if (moved > cap) {
+    offsetX *= cap / moved;
+    offsetY *= cap / moved;
+  }
+  return [aim[0] + offsetX, aim[1] + offsetY];
+}
+
+export type DriftLearnOptions = {
+  /** Only a target this close to the crosshair counts as the one aimed at. */
+  radiusPx?: number;
+  /** The runner-up must be this much further for the intent to be obvious. */
+  ambiguityRatio?: number;
+  /** Fraction of each shot's evidence taken. */
+  gain?: number;
+  /** Ceiling on the correction, in plane units. */
+  cap?: number;
+};
+
+/**
+ * Updates a standing aim correction from one shot, or returns null if the shot
+ * says nothing trustworthy.
+ *
+ * `aim` must be the crosshair before any assist pull, since the pull moves it
+ * towards the target and would hide the very error being measured. `jacobian` is
+ * the mapping's local pixels-per-plane-unit, used to turn the pixel gap back into
+ * the aim units the correction lives in.
+ *
+ * The gain is deliberately small. Each reading is dominated by the player's own
+ * aim rather than the drift, so the point is to accumulate what successive shots
+ * agree on and let the disagreement cancel.
+ */
+export function learnAimOffset(
+  bias: Vec2,
+  aim: Vec2,
+  targets: Array<{ x: number; y: number; radius: number }>,
+  jacobian: [number, number, number, number],
+  options: DriftLearnOptions = {},
+): Vec2 | null {
+  const radiusPx = options.radiusPx ?? 150;
+  const ambiguityRatio = options.ambiguityRatio ?? 1.8;
+  const gain = options.gain ?? 0.12;
+  const cap = options.cap ?? Math.tan((5 * Math.PI) / 180);
+
+  let nearest: { x: number; y: number } | null = null;
+  let nearestD = Infinity;
+  let runnerUpD = Infinity;
+  for (const t of targets) {
+    const d = Math.hypot(aim[0] - t.x, aim[1] - t.y);
+    if (d < nearestD) {
+      runnerUpD = nearestD;
+      nearestD = d;
+      nearest = t;
+    } else if (d < runnerUpD) {
+      runnerUpD = d;
     }
   }
-  if (!best) return aim;
-  const strength = 1 - Math.max(0, best.d) / assistRadius;
-  const pull = 0.35 * strength;
-  return [
-    aim[0] + (best.x - aim[0]) * pull,
-    aim[1] + (best.y - aim[1]) * pull,
-  ];
+  if (!nearest || nearestD > radiusPx) return null;
+  if (runnerUpD < nearestD * ambiguityRatio) return null;
+
+  const [a, b, c, d] = jacobian;
+  const det = a * d - b * c;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-9) return null;
+
+  const offsetX = nearest.x - aim[0];
+  const offsetY = nearest.y - aim[1];
+  const stepX = (d * offsetX - b * offsetY) / det;
+  const stepY = (-c * offsetX + a * offsetY) / det;
+  if (!Number.isFinite(stepX) || !Number.isFinite(stepY)) return null;
+
+  const next: Vec2 = [bias[0] + stepX * gain, bias[1] + stepY * gain];
+  const size = Math.hypot(next[0], next[1]);
+  if (size > cap) {
+    next[0] *= cap / size;
+    next[1] *= cap / size;
+  }
+  return next;
 }
 
 export function hitscan(

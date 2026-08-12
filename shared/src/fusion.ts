@@ -7,8 +7,192 @@ import {
   quatIdentity,
   quatMultiply,
   quatNormalize,
+  quatToRotationVector,
 } from "./quat.js";
 import type { Quat, Vec3 } from "./types.js";
+
+/**
+ * Angular velocity read off a short history of orientations.
+ *
+ * Differencing two samples and smoothing the result trades noise for lag one for
+ * one. Fitting a curve over a brief window and taking its slope at the newest
+ * sample buys both: several samples' worth of noise is averaged out, yet the
+ * answer describes now rather than the middle of the window. The curve is
+ * quadratic for exactly that reason -- a straight line's slope is the average
+ * rate across the window, which lags by half of it, so a line would be no better
+ * than the average it replaces whenever the hand is speeding up or slowing down.
+ *
+ * The window length is chosen per sample rather than fixed, because no single
+ * length is right for both halves of the job: a long window rides out the noise
+ * of a slow steady pan, and lags badly when the wrist snaps and stops. The
+ * residual tells them apart. Fitted over a span the hand actually moved smoothly
+ * across, what is left over is just sensor noise, and its size per degree of
+ * freedom is the same whatever the span; a snap inside the window inflates it.
+ * So the longest window whose residual still looks like pure noise is used.
+ */
+export class AngularRateEstimator {
+  private samples: Array<{ t: number; q: Quat }> = [];
+  private noiseScale: number | null = null;
+  private readonly window: number;
+  private readonly maxGapSec: number;
+  private readonly degree: number;
+
+  constructor(window = 15, maxGapSec = 0.15, degree = 2) {
+    this.window = Math.max(3, window);
+    this.maxGapSec = maxGapSec;
+    this.degree = degree;
+  }
+
+  reset(): void {
+    this.samples = [];
+    this.noiseScale = null;
+  }
+
+  /** `tSec` must share one clock across calls. */
+  update(q: Quat, tSec: number): Vec3 {
+    const last = this.samples[this.samples.length - 1];
+    // A gap this long means the stream stalled; the old poses say nothing about
+    // the rate now.
+    if (last && (tSec - last.t > this.maxGapSec || tSec < last.t)) {
+      this.samples = [];
+    }
+    this.samples.push({ t: tSec, q });
+    while (this.samples.length > this.window) this.samples.shift();
+
+    const n = this.samples.length;
+    if (n < 2) return [0, 0, 0];
+
+    // Everything is measured from the oldest pose in the window, so the samples
+    // share one frame and the rotations stay small enough to be linear in time.
+    const base = quatConjugate(this.samples[0]!.q);
+    const times = this.samples.map((s) => s.t);
+    const vectors = this.samples.map((s) =>
+      quatToRotationVector(quatMultiply(base, s.q)),
+    );
+
+    const end = times[n - 1]!;
+    const candidates: Array<{ length: number; slope: Vec3; noise: number }> = [];
+    for (let length = n; length >= 3; length -= 2) {
+      const fitted = this.fitWindow(times, vectors, end, length);
+      if (fitted) candidates.push({ length, ...fitted });
+    }
+    if (candidates.length === 0) return [0, 0, 0];
+
+    // The shortest window spans too little time for the hand to have done
+    // anything but move smoothly, so whatever it leaves over is the sensor's own
+    // noise. Averaged over seconds that becomes a stable yardstick, where the
+    // smallest residual of the moment would not be: fewer points always leave
+    // less behind, which would argue for the shortest window every time.
+    const shortest = candidates[candidates.length - 1]!;
+    this.noiseScale =
+      this.noiseScale === null
+        ? shortest.noise
+        : this.noiseScale * 0.98 + shortest.noise * 0.02;
+
+    const tolerance = Math.max(this.noiseScale * 2.5, 1e-12);
+    // Candidates run longest first, so this takes the most averaging the motion
+    // will support.
+    const chosen = candidates.find((c) => c.noise <= tolerance) ?? shortest;
+    return chosen.slope;
+  }
+
+  private fitWindow(
+    times: number[],
+    vectors: Vec3[],
+    end: number,
+    length: number,
+  ): { slope: Vec3; noise: number } | null {
+    const from = times.length - length;
+    const t = times.slice(from);
+    const span = end - t[0]!;
+    if (span < 1e-9) return null;
+    // Scaled to [-1, 0] so the normal equations stay well conditioned whatever
+    // the sample rate.
+    const u = t.map((x) => (x - end) / span);
+    // A polynomial needs more points than coefficients, or it interpolates the
+    // noise instead of averaging it.
+    const degree = Math.max(1, Math.min(this.degree, length - 2));
+    const dof = 3 * (length - (degree + 1));
+    if (dof <= 0) return null;
+
+    const slope: Vec3 = [0, 0, 0];
+    let ssr = 0;
+    for (let axis = 0; axis < 3; axis++) {
+      const y = vectors.slice(from).map((v) => v[axis]!);
+      const fit = fitPolyAtEnd(u, y, degree);
+      if (!fit) return null;
+      slope[axis] = fit.slope / span;
+      ssr += fit.ssr;
+    }
+    return { slope, noise: Math.sqrt(ssr / dof) };
+  }
+}
+
+/**
+ * Least-squares polynomial through (u, y) with u <= 0, returning its slope at
+ * u = 0 and the sum of squared residuals.
+ */
+function fitPolyAtEnd(
+  u: number[],
+  y: number[],
+  degree: number,
+): { slope: number; ssr: number } | null {
+  const size = degree + 1;
+  const moment: number[] = new Array(2 * degree + 1).fill(0);
+  for (const x of u) {
+    let p = 1;
+    for (let k = 0; k < moment.length; k++) {
+      moment[k]! += p;
+      p *= x;
+    }
+  }
+  const rhs: number[] = new Array(size).fill(0);
+  for (let i = 0; i < u.length; i++) {
+    let p = 1;
+    for (let k = 0; k < size; k++) {
+      rhs[k]! += y[i]! * p;
+      p *= u[i]!;
+    }
+  }
+  const A: number[][] = [];
+  for (let r = 0; r < size; r++) {
+    A.push(Array.from({ length: size }, (_, c) => moment[r + c]!));
+  }
+  const coeffs = solveSmall(A, rhs);
+  if (!coeffs) return null;
+
+  let ssr = 0;
+  for (let i = 0; i < u.length; i++) {
+    let predicted = 0;
+    let p = 1;
+    for (let k = 0; k < size; k++) {
+      predicted += coeffs[k]! * p;
+      p *= u[i]!;
+    }
+    ssr += (y[i]! - predicted) ** 2;
+  }
+  // The fit is a + b*u + c*u^2, so its slope at u = 0 is b.
+  return { slope: coeffs[1] ?? 0, ssr };
+}
+
+function solveSmall(A: number[][], b: number[]): number[] | null {
+  const n = b.length;
+  const m = A.map((row, i) => [...row, b[i]!]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) {
+      if (Math.abs(m[r]![col]!) > Math.abs(m[pivot]![col]!)) pivot = r;
+    }
+    if (Math.abs(m[pivot]![col]!) < 1e-12) return null;
+    [m[col], m[pivot]] = [m[pivot]!, m[col]!];
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = m[r]![col]! / m[col]![col]!;
+      for (let c = col; c <= n; c++) m[r]![c]! -= f * m[col]![c]!;
+    }
+  }
+  return Array.from({ length: n }, (_, i) => m[i]![n]! / m[i]![i]!);
+}
 
 /**
  * How a platform labels the three `DeviceMotionEvent.rotationRate` components.

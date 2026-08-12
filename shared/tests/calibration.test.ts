@@ -3,6 +3,7 @@ import {
   applyHomography,
   applyReferenceFrame,
   calibrationPoints,
+  clampToSafeDomain,
   cross3,
   crossValidateHomography,
   detectAimBasis,
@@ -14,7 +15,9 @@ import {
   quatMultiply,
   quatNormalize,
   referenceFrameForRecentre,
+  solveAffine,
   solveHomography,
+  type Mat3,
   type Quat,
   type Vec2,
   type Vec3,
@@ -196,10 +199,58 @@ describe("detectAimBasis", () => {
     expect(wrong!.meanError).toBeGreaterThan(fit.meanError * 10);
   });
 
-  it("marks a four-point fit as unvalidated", () => {
+  // Four points leave a projective fit no slack at all, but an affine one is
+  // determined by three, so the fourth is still a genuine held-out check.
+  it("can still validate a four-point fit, through the affine mapping", () => {
     const corners = POINTS.slice(0, 4);
-    const fit = detectAimBasis(recentredPoses(corners, [0, 1, 0]), corners);
-    expect(fit!.validated).toBe(false);
+    const fit = detectAimBasis(recentredPoses(corners, [0, 1, 0]), corners)!;
+    expect(fit.validated).toBe(true);
+    expect(fit.model).toBe("affine");
+  });
+
+  it("only pays for projective terms when they earn it on held-out error", () => {
+    const fit = detectAimBasis(recentredPoses(POINTS, [0, 1, 0]), POINTS)!;
+    if (fit.model === "affine") {
+      expect(fit.H[6]).toBe(0);
+      expect(fit.H[7]).toBe(0);
+    }
+    const affineOnly = solveAffine(planesFor(POINTS, [0, 1, 0], [0, 1, 0]), POINTS)!;
+    expect(affineOnly[6]).toBe(0);
+    expect(affineOnly[7]).toBe(0);
+  });
+});
+
+describe("clampToSafeDomain", () => {
+  // The denominator's zero sat just outside this screen, so aiming a little past
+  // the edge sent the gain to hundreds of pixels per degree.
+  const H: Mat3 = [800, 0, 815, 0, 800, 518, 0, 0.826, 1];
+
+  it("leaves an aim inside the calibrated area untouched", () => {
+    for (const p of [[0, 0], [0.3, -0.18], [-0.34, 0.28]] as Vec2[]) {
+      const safe = clampToSafeDomain(H, p);
+      expect(safe[0]).toBeCloseTo(p[0], 12);
+      expect(safe[1]).toBeCloseTo(p[1], 12);
+    }
+  });
+
+  it("keeps the mapping's gain bounded however far past the screen you aim", () => {
+    let worst = 0;
+    for (let deg = 0; deg <= 80; deg += 1) {
+      const p: Vec2 = [0, -Math.tan((deg * Math.PI) / 180)];
+      const safe = clampToSafeDomain(H, p);
+      const [a, b, c, d] = homographyJacobian(H, safe);
+      worst = Math.max(worst, Math.hypot(a, b, c, d));
+      expect(Number.isFinite(safe[0]) && Number.isFinite(safe[1])).toBe(true);
+    }
+    // Unclamped this reaches into the tens of thousands as the denominator dies.
+    expect(worst).toBeLessThan(6000);
+  });
+
+  it("holds the aim direction while pulling it in", () => {
+    const p: Vec2 = [0.4, -1.4];
+    const safe = clampToSafeDomain(H, p);
+    expect(safe[0] / safe[1]).toBeCloseTo(p[0] / p[1], 8);
+    expect(Math.hypot(...safe)).toBeLessThan(Math.hypot(...p));
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AngularRateEstimator,
   GYRO_CONVENTIONS,
   GyroAxisDetector,
   OrientationFusion,
@@ -314,5 +315,111 @@ describe("GyroAxisDetector", () => {
       );
     }
     expect(angleBetweenDeg(q, reference(60))).toBeLessThan(2);
+  });
+});
+
+describe("AngularRateEstimator", () => {
+  const HZ = 60;
+  const STEP = 1 / HZ;
+
+  // Attitude arrives quantised to about a degree, and differentiating that is
+  // what used to make a still hand look like it was moving.
+  const quantise = (deg: number, step = 1) => Math.round(deg / step) * step;
+
+  function run(
+    rateDegPerSec: (tSec: number) => number,
+    seconds: number,
+    quantStep = 1,
+  ) {
+    const fit = new AngularRateEstimator();
+    const fitted: number[] = [];
+    const smoothed: number[] = [];
+    const truth: number[] = [];
+    let angleDeg = 0;
+    let ema = 0;
+    let lastQ = quatFromAxisAngle([0, 0, 1], 0);
+
+    for (let i = 0; i * STEP <= seconds; i++) {
+      const t = i * STEP;
+      angleDeg += rateDegPerSec(t) * STEP;
+      const q = quatFromAxisAngle([0, 0, 1], d2r(quantise(angleDeg, quantStep)));
+
+      const w = fit.update(q, t);
+      const diff = angularVelocityFromQuats(lastQ, q, STEP);
+      // The exponential average this replaced, for comparison.
+      const a = 1 - Math.exp(-STEP / 0.04);
+      ema += (diff[2]! - ema) * a;
+      lastQ = q;
+
+      fitted.push(w[2]!);
+      smoothed.push(ema);
+      truth.push(d2r(rateDegPerSec(t)));
+    }
+    return { fitted, smoothed, truth };
+  }
+
+  /** Skips the first `from` samples of both series, keeping them aligned. */
+  const rmsAgainst = (v: number[], truth: number[], from: number) => {
+    let sum = 0;
+    for (let i = from; i < v.length; i++) sum += (v[i]! - truth[i]!) ** 2;
+    return Math.sqrt(sum / (v.length - from));
+  };
+
+  it("reads zero from a still phone", () => {
+    const { fitted } = run(() => 0, 1);
+    for (const w of fitted) expect(Math.abs(w)).toBeLessThan(1e-9);
+  });
+
+  it("recovers a steady turn rate", () => {
+    const { fitted } = run(() => 90, 1);
+    const settled = fitted.slice(20);
+    for (const w of settled) expect(w).toBeCloseTo(d2r(90), 1);
+  });
+
+  it("tracks a flick far better than the average it replaces", () => {
+    // A wrist cannot change speed instantly, so the flick ramps up and down.
+    const ramp = (x: number) =>
+      0.5 - 0.5 * Math.cos(Math.PI * Math.min(1, Math.max(0, x)));
+    const flick = (t: number) => {
+      const p = t % 1.6;
+      if (p < 0.07) return 400 * ramp(p / 0.07);
+      if (p < 0.17) return 400;
+      if (p < 0.24) return 400 * (1 - ramp((p - 0.17) / 0.07));
+      return 0;
+    };
+    const { fitted, smoothed, truth } = run(flick, 5);
+    const from = 40;
+    expect(rmsAgainst(fitted, truth, from)).toBeLessThan(
+      rmsAgainst(smoothed, truth, from) * 0.6,
+    );
+  });
+
+  it("is no noisier than that average on a hand just holding still", () => {
+    const { fitted, smoothed, truth } = run(
+      (t) => 3 * Math.sin(2 * Math.PI * 6 * t),
+      4,
+    );
+    const from = 40;
+    expect(rmsAgainst(fitted, truth, from)).toBeLessThanOrEqual(
+      rmsAgainst(smoothed, truth, from) * 1.1,
+    );
+  });
+
+  it("beats it on a slow steady pan too, by averaging over more samples", () => {
+    const { fitted, smoothed, truth } = run(() => 25, 4);
+    const from = 40;
+    expect(rmsAgainst(fitted, truth, from)).toBeLessThan(
+      rmsAgainst(smoothed, truth, from),
+    );
+  });
+
+  it("forgets the window after a stall instead of inventing a spike", () => {
+    const fit = new AngularRateEstimator();
+    for (let i = 0; i < 5; i++) {
+      fit.update(quatFromAxisAngle([0, 0, 1], d2r(i * 2)), i * STEP);
+    }
+    // Six seconds of silence, then the phone reappears somewhere else.
+    const after = fit.update(quatFromAxisAngle([0, 0, 1], d2r(60)), 6);
+    expect(Math.hypot(...after)).toBe(0);
   });
 });

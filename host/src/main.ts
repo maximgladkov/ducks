@@ -445,7 +445,7 @@ function buildDebugHud(): void {
       <input id="filterLeadGain" type="range" min="0" max="1.5" step="0.05" />
     </label>
     <label>aim assist radius <span id="v-aimAssistRadius"></span>
-      <input id="aimAssistRadius" type="range" min="0" max="80" step="1" />
+      <input id="aimAssistRadius" type="range" min="0" max="220" step="1" />
     </label>
     <label>sensitivity <span id="v-sensitivity"></span>
       <input id="sensitivity" type="range" min="100" max="2000" step="10" />
@@ -454,6 +454,7 @@ function buildDebugHud(): void {
     <label><input id="filteringEnabled" type="checkbox" /> filtering</label>
     <label><input id="aimAssistEnabled" type="checkbox" /> aim assist</label>
     <label><input id="absoluteAiming" type="checkbox" /> absolute aiming (vs gyro mouse)</label>
+    <label><input id="driftLearningEnabled" type="checkbox" /> learn drift from shots</label>
     <label><input id="invertX" type="checkbox" /> invert X</label>
     <label><input id="invertY" type="checkbox" /> invert Y</label>
     <label><input id="stationaryMode" type="checkbox" /> stationary target mode</label>
@@ -494,6 +495,7 @@ function buildDebugHud(): void {
   bindCheck("filteringEnabled");
   bindCheck("aimAssistEnabled");
   bindCheck("absoluteAiming");
+  bindCheck("driftLearningEnabled");
   bindCheck("invertX");
   bindCheck("invertY");
 

@@ -1,4 +1,5 @@
 import {
+  AngularRateEstimator,
   GyroAxisDetector,
   OrientationFusion,
   angularVelocityFromQuats,
@@ -63,7 +64,7 @@ export class MotionPipeline {
   private eulerRate: Vec3 = [0, 0, 0];
   private lastEulerT = 0;
   private lastRawQ: Quat = quatIdentity();
-  private rateSmoothed: Vec3 = [0, 0, 0];
+  private rateFit = new AngularRateEstimator();
   private lastMotionT = 0;
   private lastEmitT = 0;
   private emitHz = 0;
@@ -137,6 +138,7 @@ export class MotionPipeline {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.rateFit.reset();
     this.readScreenAngle();
     window.addEventListener("orientationchange", this.onScreenChange);
     screen.orientation?.addEventListener?.("change", this.onScreenChange);
@@ -241,12 +243,9 @@ export class MotionPipeline {
     const q = quatNormalize([raw[0]!, raw[1]!, raw[2]!, raw[3]!]);
     const t = this.timestampOf(this.orientationSensor?.timestamp);
 
-    let w = this.gyroRate();
-    if (Math.hypot(w[0], w[1], w[2]) < 1e-6) {
-      const dt = this.lastEmitT > 0 ? (t - this.lastEmitT) / 1000 : 1 / SENSOR_HZ;
-      w = angularVelocityFromQuats(this.lastRawQ, q, Math.max(1e-3, dt));
-    }
-    this.emit(q, w, t);
+    const measured = this.gyroRate();
+    const hasGyro = Math.hypot(measured[0], measured[1], measured[2]) >= 1e-6;
+    this.emit(q, hasGyro ? measured : null, t);
   }
 
   private onDeviceOrientation = (ev: DeviceOrientationEvent): void => {
@@ -264,10 +263,7 @@ export class MotionPipeline {
     this.lastEulerT = t;
 
     if (this.fusionActive) return;
-
-    const dt = this.lastEmitT > 0 ? (t - this.lastEmitT) / 1000 : 1 / 60;
-    const w = angularVelocityFromQuats(this.lastRawQ, q, Math.max(1e-3, dt));
-    this.emit(q, w, t);
+    this.emit(q, null, t);
   };
 
   private onDeviceMotion = (ev: DeviceMotionEvent): void => {
@@ -342,39 +338,24 @@ export class MotionPipeline {
     return Math.abs(raw - now) > 5000 ? now : raw;
   }
 
-  private emit(q: Quat, w: Vec3, t: number): void {
+  /**
+   * `w` may be null, meaning no gyroscope reading stands behind it and the rate
+   * should be read off the recent attitudes instead.
+   */
+  private emit(q: Quat, w: Vec3 | null, t: number): void {
     if (!this.running) return;
     if (this.lastEmitT > 0 && t - this.lastEmitT < 1000 / MAX_EMIT_HZ) return;
-    const dt = this.lastEmitT > 0 ? (t - this.lastEmitT) / 1000 : 1 / 60;
     if (this.lastEmitT > 0) {
       const hz = 1000 / Math.max(1, t - this.lastEmitT);
       this.emitHz = this.emitHz === 0 ? hz : this.emitHz * 0.9 + hz * 0.1;
     }
     this.lastRawQ = q;
     this.lastEmitT = t;
-    const framed = toScreenFrame(q, this.smoothRate(w, dt), this.screenAngle);
+    // Kept warm either way, so the window is already full if the gyroscope drops
+    // out mid-session.
+    const fitted = this.rateFit.update(q, t / 1000);
+    const framed = toScreenFrame(q, w ?? fitted, this.screenAngle);
     this.handlers.onSample(framed.q, framed.w, t);
-  }
-
-  /**
-   * Takes the edge off the rate before the host extrapolates with it.
-   *
-   * Without a usable gyroscope the rate has to be differentiated from an attitude
-   * that arrives quantised, and differentiating quantisation turns a still hand
-   * into a few degrees per second of noise. The host multiplies that by its
-   * prediction horizon, so the crosshair wanders even though the phone has not
-   * moved. The time constant stays near the horizon itself: long enough to bury
-   * the noise, short enough not to lag a real flick.
-   */
-  private smoothRate(w: Vec3, dtSec: number): Vec3 {
-    const tau = 0.04;
-    const a = 1 - Math.exp(-Math.max(1e-4, Math.min(0.25, dtSec)) / tau);
-    this.rateSmoothed = [
-      this.rateSmoothed[0] + (w[0] - this.rateSmoothed[0]) * a,
-      this.rateSmoothed[1] + (w[1] - this.rateSmoothed[1]) * a,
-      this.rateSmoothed[2] + (w[2] - this.rateSmoothed[2]) * a,
-    ];
-    return this.rateSmoothed;
   }
 }
 

@@ -131,6 +131,22 @@ export function dot3(a: Vec3, b: Vec3): number {
 export const WORLD_UP: Vec3 = [0, 0, 1];
 
 /**
+ * The rotation as an axis scaled by its angle in radians, taking the short way
+ * round so a negated quaternion gives the same small vector rather than a turn.
+ */
+export function quatToRotationVector(q: Quat): Vec3 {
+  const n = quatNormalize(q);
+  const flip = n[3] < 0 ? -1 : 1;
+  const x = n[0] * flip;
+  const y = n[1] * flip;
+  const z = n[2] * flip;
+  const sinHalf = Math.hypot(x, y, z);
+  if (sinHalf < 1e-9) return [0, 0, 0];
+  const scale = (2 * Math.atan2(sinHalf, n[3] * flip)) / sinHalf;
+  return [x * scale, y * scale, z * scale];
+}
+
+/**
  * Which device axis the player treats as the barrel. Axis flips and swaps are
  * deliberately absent: they are linear, so the calibration homography absorbs
  * them exactly and including them would make grip detection ambiguous.

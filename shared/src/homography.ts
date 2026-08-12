@@ -56,6 +56,74 @@ export function solveHomography(src: Vec2[], dst: Vec2[]): Mat3 | null {
   return H.some((v) => !Number.isFinite(v)) ? null : H;
 }
 
+/**
+ * Least-squares affine fit, returned in the same 3x3 form with an empty
+ * projective row.
+ *
+ * A homography divides by `h31*x + h32*y + 1`, and nine hand-aimed points
+ * determine those two terms poorly. Fitted loosely they can put the zero of that
+ * denominator just outside the screen, where the gain runs away and the crosshair
+ * slams into an edge. An affine map has no such point anywhere.
+ */
+export function solveAffine(src: Vec2[], dst: Vec2[]): Mat3 | null {
+  if (src.length < 3 || src.length !== dst.length) return null;
+  try {
+    const M = new Matrix(src.map((p) => [p[0], p[1], 1]));
+    const B = new Matrix(dst.map((p) => [p[0], p[1]]));
+    const mt = M.transpose();
+    const c = inverse(mt.mmul(M)).mmul(mt).mmul(B);
+    const H = [
+      c.get(0, 0),
+      c.get(1, 0),
+      c.get(2, 0),
+      c.get(0, 1),
+      c.get(1, 1),
+      c.get(2, 1),
+      0,
+      0,
+      1,
+    ] as unknown as Mat3;
+    return H.some((v) => !Number.isFinite(v)) ? null : H;
+  } catch {
+    return null;
+  }
+}
+
+export type PlaneFitModel = "projective" | "affine";
+
+export type PlaneFit = {
+  H: Mat3;
+  model: PlaneFitModel;
+  maxError: number;
+  meanError: number;
+};
+
+/**
+ * Picks between the projective and affine mappings on held-out error.
+ *
+ * The projective form is the physically correct one for a flat screen, but it
+ * only earns its two extra parameters when the captures are consistent enough to
+ * pin them down. Requiring a clear margin means noisy calibrations fall back to
+ * the mapping that cannot blow up, rather than buying a singularity with noise.
+ */
+export function fitPlaneToScreen(src: Vec2[], dst: Vec2[]): PlaneFit | null {
+  const projective = solveHomography(src, dst);
+  const affine = solveAffine(src, dst);
+  const projectiveCv = projective ? crossValidateHomography(src, dst) : null;
+  const affineCv = affine ? crossValidateAffine(src, dst) : null;
+
+  if (projective && projectiveCv && affine && affineCv) {
+    const worthIt = projectiveCv.maxError < affineCv.maxError * 0.85;
+    return worthIt
+      ? { H: projective, model: "projective", ...projectiveCv }
+      : { H: affine, model: "affine", ...affineCv };
+  }
+  if (affine && affineCv) return { H: affine, model: "affine", ...affineCv };
+  if (projective && projectiveCv)
+    return { H: projective, model: "projective", ...projectiveCv };
+  return null;
+}
+
 function normalizePoints(
   points: Vec2[],
 ): { points: Vec2[]; transform: Matrix } | null {
@@ -83,6 +151,24 @@ function normalizePoints(
       [0, 0, 1],
     ]),
   };
+}
+
+/**
+ * Pulls an aim direction back towards the calibrated centre until the mapping's
+ * denominator is safely away from zero.
+ *
+ * Plane (0,0) is the pose the player was in when aiming at the screen centre, so
+ * it always maps sanely; scaling towards it keeps the aim direction while leaving
+ * the runaway region. Without this, aiming past the screen makes the gain climb
+ * without limit and pins the crosshair to an edge.
+ */
+export function clampToSafeDomain(H: Mat3, p: Vec2, floor = 0.45): Vec2 {
+  const g = H[6] * p[0] + H[7] * p[1];
+  const d = H[8] + g;
+  if (d >= floor * H[8] || Math.abs(g) < 1e-12) return p;
+  const t = (floor * H[8] - H[8]) / g;
+  const k = Math.max(0, Math.min(1, t));
+  return [p[0] * k, p[1] * k];
 }
 
 export function applyHomography(H: Mat3, p: Vec2): Vec2 {
@@ -138,12 +224,28 @@ export function crossValidateHomography(
   src: Vec2[],
   dst: Vec2[],
 ): { maxError: number; meanError: number } | null {
-  if (src.length < 5) return null;
+  return crossValidate(src, dst, solveHomography, 5);
+}
+
+export function crossValidateAffine(
+  src: Vec2[],
+  dst: Vec2[],
+): { maxError: number; meanError: number } | null {
+  return crossValidate(src, dst, solveAffine, 4);
+}
+
+function crossValidate(
+  src: Vec2[],
+  dst: Vec2[],
+  solve: (s: Vec2[], d: Vec2[]) => Mat3 | null,
+  minPoints: number,
+): { maxError: number; meanError: number } | null {
+  if (src.length < minPoints) return null;
   const errors: number[] = [];
   for (let i = 0; i < src.length; i++) {
     const trainSrc = src.filter((_, j) => j !== i);
     const trainDst = dst.filter((_, j) => j !== i);
-    const H = solveHomography(trainSrc, trainDst);
+    const H = solve(trainSrc, trainDst);
     if (!H) return null;
     const p = applyHomography(H, src[i]!);
     errors.push(Math.hypot(p[0] - dst[i]![0], p[1] - dst[i]![1]));

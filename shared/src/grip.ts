@@ -1,7 +1,8 @@
 import {
-  crossValidateHomography,
+  fitPlaneToScreen,
   homographyResiduals,
   solveHomography,
+  type PlaneFitModel,
 } from "./homography.js";
 import {
   MUZZLE_CANDIDATES,
@@ -18,6 +19,8 @@ export type GripFit = {
   meanError: number;
   /** True when enough points were supplied for the error to be meaningful. */
   validated: boolean;
+  /** Which mapping won on held-out error. */
+  model: PlaneFitModel;
 };
 
 /**
@@ -56,20 +59,31 @@ export function detectAimBasis(
     }
     if (!ok) continue;
 
-    const H = solveHomography(planes, targets);
-    if (!H) continue;
-
-    const cv = crossValidateHomography(planes, targets);
-    const residuals = homographyResiduals(H, planes, targets);
-    const fit: GripFit = cv
-      ? { basis, H, maxError: cv.maxError, meanError: cv.meanError, validated: true }
-      : {
-          basis,
-          H,
-          maxError: Math.max(...residuals),
-          meanError: residuals.reduce((a, b) => a + b, 0) / residuals.length,
-          validated: false,
-        };
+    const chosen = fitPlaneToScreen(planes, targets);
+    let fit: GripFit;
+    if (chosen) {
+      fit = {
+        basis,
+        H: chosen.H,
+        maxError: chosen.maxError,
+        meanError: chosen.meanError,
+        validated: true,
+        model: chosen.model,
+      };
+    } else {
+      // Too few points to hold any out, so residuals are all that is available.
+      const H = solveHomography(planes, targets);
+      if (!H) continue;
+      const residuals = homographyResiduals(H, planes, targets);
+      fit = {
+        basis,
+        H,
+        maxError: Math.max(...residuals),
+        meanError: residuals.reduce((a, b) => a + b, 0) / residuals.length,
+        validated: false,
+        model: "projective",
+      };
+    }
 
     if (!best || fit.meanError < best.meanError) best = fit;
   }

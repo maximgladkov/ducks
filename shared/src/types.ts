@@ -150,12 +150,18 @@ export const DEFAULT_DEBUG_SETTINGS = {
    * towards the middle for over a second.
    */
   filterLeadGain: 0,
-  aimAssistRadius: 20,
+  /**
+   * Generous, because the aim it is helping is only accurate to tens of pixels
+   * and the falloff makes a wide radius unobtrusive.
+   */
+  aimAssistRadius: 90,
   sensitivity: 900,
   predictionEnabled: true,
   filteringEnabled: true,
   aimAssistEnabled: true,
   absoluteAiming: true,
+  /** Corrects heading drift from where the player is seen to shoot. */
+  driftLearningEnabled: true,
   invertX: false,
   invertY: false,
 } as const;

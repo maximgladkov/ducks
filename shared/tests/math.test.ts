@@ -18,7 +18,8 @@ import {
   clockOffsetFromExchange,
   estimateClockOffset,
 } from "../src/clock.js";
-import { aimAssistPull, hitscan } from "../src/aim.js";
+import { aimAssistPull, hitscan, learnAimOffset } from "../src/aim.js";
+import type { Vec2 } from "../src/types.js";
 
 describe("quat", () => {
   it("normalizes identity", () => {
@@ -163,5 +164,133 @@ describe("aim", () => {
       8,
     );
     expect(id).toBe("a");
+  });
+});
+
+describe("aim assist magnetism", () => {
+  const duck = (x: number, y: number) => ({ x, y, radius: 24 });
+
+  it("leaves the aim alone well outside the radius", () => {
+    const aim = aimAssistPull([0, 0], [duck(400, 0)], 90);
+    expect(aim).toEqual([0, 0]);
+  });
+
+  it("eases in rather than switching on at the edge", () => {
+    // Just inside the radius the help should be barely perceptible.
+    const atEdge = aimAssistPull([24 + 89, 0], [duck(0, 0)], 90);
+    expect(Math.abs(atEdge[0] - (24 + 89))).toBeLessThan(0.5);
+  });
+
+  it("pulls hardest with the crosshair on the duck", () => {
+    const near = aimAssistPull([30, 0], [duck(0, 0)], 90);
+    const far = aimAssistPull([100, 0], [duck(0, 0)], 90);
+    expect(30 - near[0]).toBeGreaterThan(100 - far[0]);
+  });
+
+  it("moves smoothly as a duck flies past, with no jump", () => {
+    let previous: number | null = null;
+    let biggestStep = 0;
+    for (let x = -300; x <= 300; x += 2) {
+      const aim = aimAssistPull([0, 0], [duck(x, 0)], 90);
+      if (previous !== null) {
+        biggestStep = Math.max(biggestStep, Math.abs(aim[0] - previous));
+      }
+      previous = aim[0];
+    }
+    expect(biggestStep).toBeLessThan(3);
+  });
+
+  it("does not flick between two ducks that swap for nearest", () => {
+    // As the pair slides across, a winner-takes-all pull would jump at the
+    // moment they trade places.
+    let previous: number | null = null;
+    let biggestStep = 0;
+    for (let shift = -40; shift <= 40; shift += 1) {
+      const aim = aimAssistPull(
+        [0, 0],
+        [duck(-60 + shift, 0), duck(60 + shift, 0)],
+        120,
+      );
+      if (previous !== null) {
+        biggestStep = Math.max(biggestStep, Math.abs(aim[0] - previous));
+      }
+      previous = aim[0];
+    }
+    expect(biggestStep).toBeLessThan(3);
+  });
+
+  it("never carries the crosshair further than half the radius", () => {
+    const aim = aimAssistPull([0, 0], [{ x: 400, y: 0, radius: 380 }], 100);
+    expect(Math.hypot(aim[0], aim[1])).toBeLessThanOrEqual(50.001);
+  });
+});
+
+describe("learning drift from shots", () => {
+  const d2r = (deg: number) => (deg * Math.PI) / 180;
+
+  // A calibrated mapping of 800 pixels per unit of aim, centred on a 1600x1000
+  // screen, with no projective terms.
+  const JACOBIAN: [number, number, number, number] = [800, 0, 0, 800];
+  const duck = (x: number, y: number) => ({ x, y, radius: 24 });
+
+  /** Where the crosshair lands when the true aim is at `x, y` and drift is on. */
+  const drawn = (x: number, y: number, bias: Vec2, driftPlane: Vec2): Vec2 => [
+    x + (driftPlane[0] + bias[0]) * JACOBIAN[0],
+    y + (driftPlane[1] + bias[1]) * JACOBIAN[3],
+  ];
+
+  it("declines to learn when no target is near the shot", () => {
+    expect(
+      learnAimOffset([0, 0], [800, 500], [duck(1400, 900)], JACOBIAN),
+    ).toBeNull();
+  });
+
+  it("declines to learn when two targets are equally plausible", () => {
+    expect(
+      learnAimOffset([0, 0], [800, 500], [duck(760, 500), duck(840, 500)], JACOBIAN),
+    ).toBeNull();
+  });
+
+  it("cancels a steady drift over a handful of shots", () => {
+    // A degree of accumulated yaw error, which is what a minute of play costs.
+    const drift: Vec2 = [Math.tan(d2r(1)), 0];
+    let bias: Vec2 = [0, 0];
+    for (let shot = 0; shot < 40; shot++) {
+      const duckX = 500 + ((shot * 137) % 700);
+      const duckY = 300 + ((shot * 91) % 400);
+      // The player aims true; the drift is what puts the crosshair off.
+      const aim = drawn(duckX, duckY, bias, drift);
+      bias = learnAimOffset(bias, aim, [duck(duckX, duckY)], JACOBIAN) ?? bias;
+    }
+    expect(bias[0]).toBeCloseTo(-drift[0], 3);
+    expect(bias[1]).toBeCloseTo(0, 3);
+    const settled = drawn(800, 500, bias, drift);
+    expect(Math.hypot(settled[0] - 800, settled[1] - 500)).toBeLessThan(2);
+  });
+
+  it("is not dragged off by a player whose own aim scatters", () => {
+    let seed = 11;
+    const scatter = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return (seed / 0x7fffffff - 0.5) * 120;
+    };
+    let bias: Vec2 = [0, 0];
+    for (let shot = 0; shot < 60; shot++) {
+      const duckX = 500 + ((shot * 137) % 700);
+      const duckY = 300 + ((shot * 91) % 400);
+      const aim: Vec2 = [duckX + scatter(), duckY + scatter()];
+      bias = learnAimOffset(bias, aim, [duck(duckX, duckY)], JACOBIAN) ?? bias;
+    }
+    // 60px of random scatter either way must not become a standing correction.
+    expect(Math.hypot(bias[0], bias[1]) * 800).toBeLessThan(20);
+  });
+
+  it("cannot be taken over, however far off the shots are", () => {
+    let bias: Vec2 = [0, 0];
+    for (let shot = 0; shot < 200; shot++) {
+      bias = learnAimOffset(bias, [800, 500], [duck(680, 620)], JACOBIAN) ?? bias;
+    }
+    const cap = Math.tan(d2r(5));
+    expect(Math.hypot(bias[0], bias[1])).toBeLessThanOrEqual(cap + 1e-9);
   });
 });

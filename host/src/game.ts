@@ -9,10 +9,12 @@ import {
   applyReferenceFrame,
   calibrationPoints,
   clampAim,
+  clampToSafeDomain,
   colorForPlayer,
   crossValidateHomography,
   detectAimBasis,
   hitscan,
+  learnAimOffset,
   solveHomography,
   homographyJacobian,
   hostTimeFromController,
@@ -92,6 +94,11 @@ export type PlayerRuntime = {
   hasRecentered: boolean;
   sensorReady: boolean;
   sensorTiltDeg: number;
+  /** Standing correction for accumulated drift, in plane units. */
+  aimBias: Vec2;
+  /** Shots that have contributed to `aimBias`. */
+  biasShots: number;
+  lastAimPlane: Vec2 | null;
   gripLabel: string;
   el: HTMLDivElement;
   wedge: HTMLDivElement;
@@ -102,7 +109,7 @@ export type PlayerRuntime = {
 
 // Bumped from v4: filter parameters moved from pixels to degrees of aim angle,
 // so previously stored values mean something entirely different now.
-const SETTINGS_KEY = "duckhunt.debug.v6";
+const SETTINGS_KEY = "duckhunt.debug.v7";
 
 export function loadSettings(): DebugSettings {
   try {
@@ -191,6 +198,9 @@ export function createPlayer(
     hasRecentered: false,
     sensorReady: false,
     sensorTiltDeg: 0,
+    aimBias: [0, 0],
+    biasShots: 0,
+    lastAimPlane: null,
     gripLabel: DEFAULT_AIM_BASIS.label,
     el,
     wedge,
@@ -272,6 +282,9 @@ export function handlePlayerEvent(
     if (p.lastSample) {
       p.refInverse = referenceFrameForRecentre(p.lastSample.q);
       p.hasRecentered = true;
+      // Measured against the old reference, so it means nothing against the new.
+      p.aimBias = [0, 0];
+      p.biasShots = 0;
     }
     if (!settings.absoluteAiming) {
       p.relativePos = [screen[0] / 2, screen[1] / 2];
@@ -300,6 +313,7 @@ export function handlePlayerEvent(
       })),
       settings.aimAssistEnabled ? 10 : 4,
     );
+    learnAimBias(p, targets, settings, screen);
     if (hitId) {
       return { hitId, miss: false };
     }
@@ -364,13 +378,17 @@ function planeToScreen(
   screen: Vec2,
   settings: DebugSettings,
 ): Vec2 {
+  const corrected: Vec2 = [plane[0] + p.aimBias[0], plane[1] + p.aimBias[1]];
   const bounded: Vec2 = [
-    Math.max(-3, Math.min(3, plane[0])),
-    Math.max(-3, Math.min(3, plane[1])),
+    Math.max(-3, Math.min(3, corrected[0])),
+    Math.max(-3, Math.min(3, corrected[1])),
   ];
   let mapped: Vec2;
   if (p.homography) {
-    mapped = applyHomography(p.homography, bounded);
+    mapped = applyHomography(
+      p.homography,
+      clampToSafeDomain(p.homography, bounded),
+    );
   } else {
     const scale = Math.min(screen[0], screen[1]) * 0.55;
     mapped = [screen[0] / 2 + bounded[0] * scale, screen[1] / 2 + bounded[1] * scale];
@@ -430,8 +448,69 @@ export function updatePlayerFrame(
   }
 
   p.filtered = planeToScreen(aimPlane, p, screen, settings);
+  p.lastAimPlane = aimPlane;
   logAimFrame(p, rawPlane, predictedPlane, aimPlane, screen);
   finishFrame(p, p.filtered, settings, screen, targets, dt, showGhosts);
+}
+
+/**
+ * Learns a standing aim correction from where the player actually shoots.
+ *
+ * Heading has nothing to hold it in place: the phone has no compass worth using,
+ * so gravity fixes tilt while yaw is free to wander a few tenths of a degree per
+ * second, and after a minute the crosshair sits slightly off. There is no sensor
+ * that can see this, but the player can, and they reveal it every time they
+ * shoot: with one duck plainly under the crosshair, the gap between where they
+ * fired and where that duck was is a reading of the accumulated error.
+ *
+ * Any single reading is mostly the player's own aim, so only a small fraction of
+ * each is taken and only when the intended duck is unambiguous. Over a handful of
+ * consistent shots the common part -- the drift -- accumulates while the player's
+ * scatter cancels out. The total is capped, so even a run of strange shots can
+ * only nudge the aim rather than take it over.
+ */
+function learnAimBias(
+  p: PlayerRuntime,
+  targets: Target[],
+  settings: DebugSettings,
+  screen: Vec2,
+): void {
+  if (!settings.driftLearningEnabled) return;
+  if (!p.homography || !p.lastAimPlane || p.calibrating) return;
+
+  // The mapping flips the pixel axes after the fact, so the gap has to be read
+  // back through the same flip to mean anything in aim units.
+  const seen: Vec2 = [
+    settings.invertX ? screen[0] - p.filtered[0] : p.filtered[0],
+    settings.invertY ? screen[1] - p.filtered[1] : p.filtered[1],
+  ];
+  const asAimed = targets.map((t) => ({
+    x: settings.invertX ? screen[0] - t.x : t.x,
+    y: settings.invertY ? screen[1] - t.y : t.y,
+    radius: t.radius,
+  }));
+
+  const next = learnAimOffset(
+    p.aimBias,
+    seen,
+    asAimed,
+    homographyJacobian(p.homography, p.lastAimPlane),
+  );
+  if (!next) return;
+  p.aimBias = next;
+  p.biasShots += 1;
+
+  diagLog("bias", {
+    id: p.id,
+    shots: p.biasShots,
+    biasDeg: roundAll(
+      [
+        (Math.atan(p.aimBias[0]) * 180) / Math.PI,
+        (Math.atan(p.aimBias[1]) * 180) / Math.PI,
+      ],
+      3,
+    ),
+  });
 }
 
 /**
@@ -583,6 +662,8 @@ export function beginCalibration(p: PlayerRuntime): void {
   p.calibRays = [];
   p.calibQuats = [];
   p.homography = null;
+  p.aimBias = [0, 0];
+  p.biasShots = 0;
   p.aimBasis = { ...DEFAULT_AIM_BASIS };
   p.gripLabel = "detecting…";
   if (p.lastSample) {
@@ -702,6 +783,8 @@ function refreshProvisionalAim(p: PlayerRuntime, screen: Vec2): void {
   p.hasRecentered = true;
   p.aimBasis = basis;
   p.homography = H;
+  p.aimBias = [0, 0];
+  p.biasShots = 0;
 }
 
 export const CALIB_POINT_COUNT = 9;
@@ -732,6 +815,8 @@ export function finishCalibration(
   errorPx: number;
   worstIndex: number;
   gripLabel?: string;
+  /** Which mapping won on held-out error. */
+  model?: string;
 } {
   const targets = calibTargets(screen);
   if (p.calibQuats.length < CALIB_POINT_COUNT) {
@@ -789,6 +874,8 @@ export function finishCalibration(
   p.aimBasis = fit.basis;
   p.gripLabel = fit.basis.label;
   p.homography = fit.H;
+  p.aimBias = [0, 0];
+  p.biasShots = 0;
   p.calibrating = false;
   p.filter.reset();
   logCalibrationReport(p, recentred, screen, true);
@@ -798,6 +885,7 @@ export function finishCalibration(
     errorPx: fit.maxError,
     worstIndex,
     gripLabel: fit.basis.label,
+    model: fit.model,
   };
 }
 
