@@ -24,7 +24,7 @@ export function createSkyClouds(count = 8): SkyCloud[] {
 
 function spawnCloud(initial: boolean): SkyCloud {
   const playH = screenH * (184 / 240);
-  const sprite = Math.floor(Math.random() * 16);
+  const sprite = Math.floor(Math.random() * 14);
   const scale = 2.2 + Math.random() * 3.5;
   const speed = (8 + Math.random() * 16) * (Math.random() < 0.5 ? 1 : -1);
   return {

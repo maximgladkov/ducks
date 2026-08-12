@@ -69,7 +69,7 @@ export async function loadSpriteBank(): Promise<SpriteBank> {
   const cloudPaths = [
     ...Array.from({ length: 4 }, (_, i) => `clouds/fluff${i}.png`),
     ...Array.from({ length: 6 }, (_, i) => `clouds/cloud${i + 2}.png`),
-    ...Array.from({ length: 6 }, (_, i) => `clouds/c${i}.png`),
+    ...Array.from({ length: 4 }, (_, i) => `clouds/c${i + 2}.png`),
   ];
   const [
     meadowBack,
