@@ -189,10 +189,11 @@ body {
 
 #join-url {
   margin-top: 8px;
-  font-size: 7px;
-  color: var(--muted);
+  font-size: 10px;
+  color: var(--nes-yellow);
   word-break: break-all;
   line-height: 1.5;
+  letter-spacing: 0.04em;
 }
 
 #players {

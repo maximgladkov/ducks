@@ -27,8 +27,27 @@ type Session = {
 
 const sessions = new Map<string, Session>();
 
+const SESSION_CODE_LEN = 3;
+const SESSION_ALPHABET = "abcdefghijklmnopqrstuvwxyz";
+
 function id(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function shortSessionId(): string {
+  for (let attempt = 0; attempt < 64; attempt++) {
+    let code = "";
+    for (let i = 0; i < SESSION_CODE_LEN; i++) {
+      code += SESSION_ALPHABET[Math.floor(Math.random() * SESSION_ALPHABET.length)]!;
+    }
+    if (!sessions.has(code)) return code;
+  }
+  return id("sess");
+}
+
+function sessionCodeFromPath(pathname: string): string | null {
+  const match = pathname.match(/^\/([a-z]{2,4})$/);
+  return match?.[1] ?? null;
 }
 
 function send(ws: WebSocket, msg: SignallingMessage): void {
@@ -150,6 +169,19 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  const sessionCode = sessionCodeFromPath(pathname);
+  if (sessionCode) {
+    const existing = sessions.get(sessionCode);
+    if (existing?.host) {
+      res.writeHead(302, { location: `/c/${sessionCode}${url.search}` });
+      res.end();
+      return;
+    }
+    if (await serveFile(res, path.join(hostDist, "index.html"))) return;
+    res.writeHead(404).end("not found");
+    return;
+  }
+
   const hostCandidate = path.join(hostDist, pathname === "/" ? "index.html" : pathname);
   const safeHost = path.normalize(hostCandidate);
   if (!safeHost.startsWith(hostDist)) {
@@ -178,12 +210,12 @@ wss.on("connection", (ws, req) => {
     }
 
     if (msg.type === "create_session") {
-      const sessionId = id("sess");
+      const sessionId = shortSessionId();
       session = { id: sessionId, host: null, controllers: new Map() };
       peer = { ws, role: "host" };
       session.host = peer;
       sessions.set(sessionId, session);
-      const joinUrl = `${base}/c/?session=${sessionId}`;
+      const joinUrl = `${base}/${sessionId}`;
       send(ws, { type: "session_created", sessionId, joinUrl });
       send(ws, {
         type: "joined",

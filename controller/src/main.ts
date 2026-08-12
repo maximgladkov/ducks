@@ -15,7 +15,8 @@ const recentreBtn = document.getElementById("recentre") as HTMLButtonElement;
 const triggerBtn = document.getElementById("trigger") as HTMLButtonElement;
 
 const params = new URLSearchParams(location.search);
-const sessionId = params.get("session");
+const pathSession = location.pathname.match(/\/c\/([a-z]{2,4})\/?$/i)?.[1]?.toLowerCase();
+const sessionId = pathSession ?? params.get("session");
 
 let wakeLock: WakeLockSentinel | null = null;
 let eventSeq = 0;

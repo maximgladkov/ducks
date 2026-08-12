@@ -612,10 +612,13 @@ const { send } = connectSignalling(sigUrl, (msg: SignallingMessage) => {
     sessionId = msg.sessionId;
     const params = new URLSearchParams(location.search);
     const sig = params.get("sig") ?? defaultSignallingUrl();
+    history.replaceState(null, "", `/${sessionId}${location.search}`);
     const join = new URL(msg.joinUrl, location.origin);
-    if (!join.searchParams.get("sig")) join.searchParams.set("sig", sig);
+    if (params.get("sig") && !join.searchParams.get("sig")) {
+      join.searchParams.set("sig", sig);
+    }
     joinUrl = join.toString();
-    joinUrlEl.textContent = joinUrl;
+    joinUrlEl.textContent = joinUrl.replace(/^https?:\/\//, "");
     void QRCode.toCanvas(qrCanvas, joinUrl, { width: 180, margin: 1 });
     return;
   }
