@@ -117,10 +117,29 @@ describe("StillLock", () => {
     const lock = new StillLock(0.2, 0.12);
     const held = lock.update([100, 100], 0.02, 0.25);
     expect(held).toEqual([100, 100]);
-    const crawled = lock.update([108, 104], 0.02, 0.05);
+    const crawled = lock.update([102, 101], 0.02, 0.05);
     expect(crawled).toEqual([100, 100]);
     const released = lock.update([120, 90], 0.5, 0.016);
     expect(released).toEqual([120, 90]);
+  });
+
+  it("does not lock during a slow pan below the rate threshold", () => {
+    const lock = new StillLock(0.2, 0.12);
+    for (let i = 0; i < 40; i++) {
+      const aim: [number, number] = [100 + i * 2, 100];
+      const out = lock.update(aim, 0.05, 0.016);
+      expect(out).toEqual(aim);
+      expect(lock.locked()).toBe(false);
+    }
+  });
+
+  it("releases when the live aim walks away even if gyro rate stays low", () => {
+    const lock = new StillLock(0.2, 0.12);
+    lock.update([100, 100], 0.02, 0.25);
+    expect(lock.locked()).toBe(true);
+    const released = lock.update([120, 100], 0.02, 0.016);
+    expect(released).toEqual([120, 100]);
+    expect(lock.locked()).toBe(false);
   });
 });
 

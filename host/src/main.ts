@@ -750,7 +750,12 @@ function updateDebugStats(): void {
     const planeStr = plane
       ? `plane=(${plane[0].toFixed(3)},${plane[1].toFixed(3)})`
       : "plane=—";
-    return `P${p.index + 1} ${p.transport} rtt=${p.rtt.toFixed(1)}ms off=${p.clockOffset.toFixed(1)} age=${p.sampleAge.toFixed(1)}ms hor=${p.horizonMs.toFixed(0)}ms nq=${p.rateQuality.toFixed(2)} pkts=${rate} drop~${peer?.dropped ?? 0} ${planeStr}`;
+    const w = p.lastSample?.w;
+    const rateDeg = w
+      ? ((Math.hypot(w[0], w[1], w[2]) * 180) / Math.PI).toFixed(1)
+      : "—";
+    const lock = p.stillLock.locked() ? "on" : "off";
+    return `P${p.index + 1} ${p.transport} rtt=${p.rtt.toFixed(1)}ms off=${p.clockOffset.toFixed(1)} age=${p.sampleAge.toFixed(1)}ms hor=${p.horizonMs.toFixed(0)}ms nq=${p.rateQuality.toFixed(2)} ω=${rateDeg}°/s lock=${lock} pkts=${rate} drop~${peer?.dropped ?? 0} ${planeStr}`;
   });
   let calibLine = "";
   if (calibratingPlayerId) {
