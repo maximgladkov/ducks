@@ -918,6 +918,36 @@ export function averageQuats(quats: Quat[]): Quat | null {
   return quatNormalize([x, y, z, w]);
 }
 
+export function sliceCalibWindow(
+  quats: Quat[],
+  planes: Vec2[],
+  times: number[],
+  fromMs: number,
+  toMs: number,
+): { quats: Quat[]; planes: Vec2[]; durationMs: number } | null {
+  if (
+    quats.length === 0 ||
+    quats.length !== times.length ||
+    planes.length !== times.length
+  ) {
+    return null;
+  }
+  const outQ: Quat[] = [];
+  const outP: Vec2[] = [];
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i];
+    if (t < fromMs || t > toMs) continue;
+    outQ.push(quats[i]!);
+    outP.push(planes[i]!);
+    t0 = Math.min(t0, t);
+    t1 = Math.max(t1, t);
+  }
+  if (outQ.length === 0) return null;
+  return { quats: outQ, planes: outP, durationMs: Math.max(0, t1 - t0) };
+}
+
 /**
  * Net rotation rate across a capture window, in deg/s.
  *

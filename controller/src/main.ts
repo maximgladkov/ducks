@@ -58,12 +58,14 @@ const session = new ControllerSession(sendStub, {
     if (msg.type === "calib_prompt") {
       calibrating = true;
       setStatus(`Calibrate target ${msg.seq + 1}/${msg.total}`);
-      setHint(`Same grip for all ${msg.total} dots — aim at the dot, hold still, FIRE`);
+      setHint(`Same grip for all ${msg.total} dots — aim at the dot, hold FIRE still until it locks`);
+      if (armed) triggerBtn.textContent = "HOLD";
     }
     if (msg.type === "calib_done") {
       calibrating = false;
       setStatus(msg.ok ? "Calibration OK — aim and shoot" : msg.reason ?? "Calib failed");
       setHint(IDLE_HINT);
+      if (armed) triggerBtn.textContent = "FIRE";
     }
     if (msg.type === "status") setStatus(msg.text);
     if (msg.type === "ammo") {
@@ -153,7 +155,7 @@ async function arm(): Promise<void> {
   armed = true;
   motion.start();
   triggerBtn.dataset.state = "ready";
-  triggerBtn.textContent = "FIRE";
+  triggerBtn.textContent = calibrating ? "HOLD" : "FIRE";
   setStatus(`Ready · ${motion.getMode()}`);
   setHint(IDLE_HINT);
   wakeLock = await requestWakeLock();
@@ -189,7 +191,7 @@ function cancelRecentreHold(): void {
 
 function fire(): void {
   if (calibrating) {
-    sfx.shot();
+    triggerBtn.textContent = "HOLDING";
     sendEvent("trigger_down", eventSeq++);
     return;
   }
@@ -243,6 +245,7 @@ const releasePointer = (ev: PointerEvent) => {
     triggerBtn.releasePointerCapture(ev.pointerId);
   }
   sendEvent("trigger_up", eventSeq++);
+  if (armed) triggerBtn.textContent = calibrating ? "HOLD" : "FIRE";
 };
 
 triggerBtn.addEventListener("pointerup", releasePointer);

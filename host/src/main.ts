@@ -20,6 +20,7 @@ import {
   averageQuats,
   quatAngularSpread,
   quatDriftRate,
+  sliceCalibWindow,
   recordCalibCorner,
   removePlayer,
   sampleCalibQuat,
@@ -114,9 +115,13 @@ let calibCapture: {
   playerId: string;
   samples: Vec2[];
   quats: import("@duckhunt/shared").Quat[];
+  times: number[];
   startedAt: number;
 } | null = null;
-const CALIB_CAPTURE_MS = 350;
+const CALIB_SETTLE_MS = 150;
+const CALIB_STABLE_MS = 550;
+const CALIB_MIN_HOLD_MS = 400;
+const CALIB_RELEASE_TRIM_MS = 80;
 const CALIB_MIN_SAMPLES = 12;
 const CALIB_MAX_ANGLE_SPREAD = 0.06;
 /**
@@ -295,7 +300,7 @@ function showCalibCorner(seq: number): void {
   calibCount.textContent = `TARGET ${seq + 1} / ${total}`;
   updateCalibPips(seq, total);
   updateCalibDodge(c[0], c[1]);
-  setCalibStatus("Aim at the glowing dot, hold still, then pull the trigger");
+  setCalibStatus("Aim at the glowing dot, then hold FIRE still until it locks");
 }
 
 function hideCalibCorner(): void {
@@ -415,7 +420,7 @@ function startCalibration(
   showCalibCorner(0);
   peer.send({
     type: "status",
-    text: `Hold phone however you like — keep that grip for all ${total} targets`,
+    text: `Keep that grip for all ${total} targets — hold FIRE on each until it locks`,
   });
   peer.send({
     type: "calib_prompt",
@@ -430,43 +435,93 @@ function startCalibCapture(p: PlayerRuntime): void {
     playerId: p.id,
     samples: [],
     quats: [],
+    times: [],
     startedAt: performance.now(),
   };
-  setCalibStatus("Hold still — capturing samples…");
+  setCalibStatus("Hold still until it locks…");
+  const peer = peers.get(p.id);
+  peer?.send({ type: "status", text: "Hold still until it locks" });
 }
 
-function completeCalibCapture(p: PlayerRuntime): void {
+function calibHoldWindow(
+  now: number,
+  kind: "auto" | "release",
+): { quats: import("@duckhunt/shared").Quat[]; planes: Vec2[]; durationMs: number } | null {
+  if (!calibCapture) return null;
+  const settleFrom = calibCapture.startedAt + CALIB_SETTLE_MS;
+  const to = kind === "release" ? now - CALIB_RELEASE_TRIM_MS : now;
+  if (to <= settleFrom) return null;
+  const trailingFrom = Math.max(settleFrom, to - CALIB_STABLE_MS);
+  const trailing = sliceCalibWindow(
+    calibCapture.quats,
+    calibCapture.samples,
+    calibCapture.times,
+    trailingFrom,
+    to,
+  );
+  if (
+    trailing &&
+    trailing.durationMs >= Math.min(CALIB_STABLE_MS, to - settleFrom) * 0.85 &&
+    trailing.quats.length >= CALIB_MIN_SAMPLES
+  ) {
+    return trailing;
+  }
+  return sliceCalibWindow(
+    calibCapture.quats,
+    calibCapture.samples,
+    calibCapture.times,
+    settleFrom,
+    to,
+  );
+}
+
+function completeCalibCapture(
+  p: PlayerRuntime,
+  now: number,
+  kind: "auto" | "release",
+): boolean {
   const peer = peers.get(p.id);
-  if (!peer || !calibCapture || calibCapture.playerId !== p.id) return;
-  const samples = calibCapture.samples;
-  const quats = calibCapture.quats;
-  calibCapture = null;
-  if (quats.length < CALIB_MIN_SAMPLES) {
+  if (!peer || !calibCapture || calibCapture.playerId !== p.id) return false;
+  const held = calibHoldWindow(now, kind);
+  const minMs = kind === "auto" ? CALIB_STABLE_MS * 0.9 : CALIB_MIN_HOLD_MS;
+  if (
+    !held ||
+    held.durationMs < minMs ||
+    held.quats.length < CALIB_MIN_SAMPLES
+  ) {
+    if (kind === "auto") return false;
+    calibCapture = null;
     peer.send({
       type: "status",
-      text: `Too few samples (${quats.length}) — hold longer and retry`,
+      text: "Hold longer — keep FIRE down until the target locks",
     });
-    setCalibStatus("Capture failed — hold steadier and retry this corner");
-    return;
+    setCalibStatus("Hold FIRE longer on this target, then release");
+    return false;
   }
+  const quats = held.quats;
+  const samples = held.planes;
   const angleSpread = quatAngularSpread(quats);
   if (angleSpread > CALIB_MAX_ANGLE_SPREAD) {
+    if (kind === "auto") return false;
+    calibCapture = null;
     peer.send({
       type: "status",
-      text: `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — steady and retry`,
+      text: `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`,
     });
     setCalibStatus(
       `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`,
     );
-    return;
+    return false;
   }
-  const driftRate = quatDriftRate(quats, CALIB_CAPTURE_MS / 1000);
+  const driftRate = quatDriftRate(quats, held.durationMs / 1000);
   if (driftRate > CALIB_MAX_DRIFT_DEG_PER_SEC) {
+    if (kind === "auto") return false;
+    calibCapture = null;
     diagLog("calib_reject", {
       id: p.id,
       index: p.calibQuats.length,
       driftDegPerSec: Number(driftRate.toFixed(2)),
-      spreadDeg: Number((((angleSpread * 180) / Math.PI)).toFixed(2)),
+      spreadDeg: Number(((angleSpread * 180) / Math.PI).toFixed(2)),
     });
     peer.send({
       type: "status",
@@ -475,13 +530,14 @@ function completeCalibCapture(p: PlayerRuntime): void {
     setCalibStatus(
       `Sensors still settling (${driftRate.toFixed(1)}°/s drift) — hold steady and retry this target`,
     );
-    return;
+    return false;
   }
+  calibCapture = null;
   const meanPlane = averageVec2(samples);
   const meanQuat = averageQuats(quats);
   if (!meanQuat) {
     peer.send({ type: "status", text: "Bad sample — try again" });
-    return;
+    return true;
   }
   recordCalibCorner(p, meanQuat, meanPlane ?? [0, 0], screenSize());
   const n = p.calibQuats.length;
@@ -491,8 +547,10 @@ function completeCalibCapture(p: PlayerRuntime): void {
     target: calibTargets(screenSize())[n - 1] ?? null,
     quat: roundAll(meanQuat),
     plane: meanPlane ? roundAll(meanPlane) : null,
-    spreadDeg: Number((((quatAngularSpread(quats) * 180) / Math.PI)).toFixed(2)),
+    spreadDeg: Number(((angleSpread * 180) / Math.PI).toFixed(2)),
     samples: quats.length,
+    holdMs: Math.round(held.durationMs),
+    kind,
     aimPx: roundAll(p.aim, 1),
   });
   peer.send({
@@ -507,7 +565,7 @@ function completeCalibCapture(p: PlayerRuntime): void {
       total: p.calibTotal,
       corner: calibTargets(screenSize())[n]!,
     });
-    return;
+    return true;
   }
   const result = finishCalibration(p, screenSize());
   diagLog("calib_result", { id: p.id, ...result });
@@ -537,12 +595,19 @@ function completeCalibCapture(p: PlayerRuntime): void {
       : result.reason ?? "Calibration failed",
   );
   window.setTimeout(() => setCalibResult(null), 5000);
+  return true;
 }
 
 function onCalibPoint(p: PlayerRuntime, _seq: number): void {
   if (!p.calibrating) return;
   if (calibCapture) return;
   startCalibCapture(p);
+}
+
+function onCalibHoldEnd(p: PlayerRuntime): void {
+  if (!p.calibrating) return;
+  if (!calibCapture || calibCapture.playerId !== p.id) return;
+  completeCalibCapture(p, performance.now(), "release");
 }
 
 function buildDebugHud(): void {
@@ -740,13 +805,21 @@ function frame(now: number): void {
     if (p) {
       const plane = samplePlane(p);
       const quat = sampleCalibQuat(p);
-      if (plane) calibCapture.samples.push(plane);
-      if (quat) calibCapture.quats.push(quat);
-      if (now - calibCapture.startedAt >= CALIB_CAPTURE_MS) {
-        completeCalibCapture(p);
-      } else {
+      if (plane && quat) {
+        calibCapture.samples.push(plane);
+        calibCapture.quats.push(quat);
+        calibCapture.times.push(now);
+      }
+      if (!completeCalibCapture(p, now, "auto") && calibCapture) {
+        const held = now - calibCapture.startedAt;
+        const progress = Math.max(
+          0,
+          Math.min(1, (held - CALIB_SETTLE_MS) / CALIB_STABLE_MS),
+        );
         setCalibStatus(
-          `Hold still — capturing ${calibCapture.samples.length} samples…`,
+          progress >= 1
+            ? "Keep holding still — waiting for a steady window"
+            : `Hold still until it locks… ${Math.round(progress * 100)}%`,
         );
       }
     }
@@ -808,6 +881,7 @@ function addPlayer(playerId: string): void {
           targets,
           onCalibPoint,
         );
+        if (event.type === "trigger_up") onCalibHoldEnd(p);
         return;
       }
 
