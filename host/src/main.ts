@@ -128,6 +128,17 @@ let stationaryMode = false;
 let targetSeq = 0;
 let sessionId = "";
 let joinUrl = "";
+
+function sessionIdFromPath(): string | undefined {
+  const match = location.pathname.match(/^\/([a-z]{2,4})$/i);
+  return match?.[1]?.toLowerCase();
+}
+
+function rememberHostSession(id: string): void {
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `duckhunt_host=${id}; Path=/; Max-Age=86400; SameSite=Lax${secure}`;
+}
+
 let lastFrame = performance.now();
 let fps = 0;
 let frameTime = 0;
@@ -1214,6 +1225,7 @@ const sigUrl = defaultSignallingUrl();
 const { send } = connectSignalling(sigUrl, (msg: SignallingMessage) => {
   if (msg.type === "session_created") {
     sessionId = msg.sessionId;
+    rememberHostSession(sessionId);
     const params = new URLSearchParams(location.search);
     const sig = params.get("sig") ?? defaultSignallingUrl();
     history.replaceState(null, "", `/${sessionId}${location.search}`);
@@ -1255,7 +1267,9 @@ const { send } = connectSignalling(sigUrl, (msg: SignallingMessage) => {
   }
 });
 
-send({ type: "create_session" });
+const resumeSessionId = sessionIdFromPath();
+if (resumeSessionId) rememberHostSession(resumeSessionId);
+send({ type: "create_session", sessionId: resumeSessionId });
 
 const soundGate = document.getElementById("sound-gate");
 

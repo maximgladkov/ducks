@@ -78,7 +78,7 @@ export type ControllerToHostPayload =
 export type ClientRole = "host" | "controller";
 
 export type SignallingMessage =
-  | { type: "create_session" }
+  | { type: "create_session"; sessionId?: string }
   | {
       type: "session_created";
       sessionId: string;

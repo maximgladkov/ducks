@@ -50,12 +50,59 @@ function sessionCodeFromPath(pathname: string): string | null {
   return match?.[1] ?? null;
 }
 
+function isSessionId(value: string): boolean {
+  return /^[a-z]{2,4}$/.test(value);
+}
+
+function cookieValue(
+  header: string | string[] | undefined,
+  name: string,
+): string | null {
+  const raw = Array.isArray(header) ? header.join("; ") : (header ?? "");
+  for (const part of raw.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx < 0) continue;
+    const key = part.slice(0, idx).trim();
+    if (key === name) return part.slice(idx + 1).trim();
+  }
+  return null;
+}
+
+const HOST_COOKIE = "duckhunt_host";
+
+function hostCookie(req: {
+  headers: Record<string, string | string[] | undefined>;
+}): string | null {
+  const value = cookieValue(req.headers.cookie, HOST_COOKIE);
+  return value && isSessionId(value) ? value : null;
+}
+
+function hostCookieHeader(
+  sessionId: string,
+  req: { headers: Record<string, string | string[] | undefined> },
+): string {
+  const xf = String(req.headers["x-forwarded-proto"] ?? "");
+  const secure = xf === "https" || PUBLIC_BASE_URL.startsWith("https") ? "; Secure" : "";
+  return `${HOST_COOKIE}=${sessionId}; Path=/; Max-Age=86400; SameSite=Lax${secure}`;
+}
+
+function isTvDocumentRequest(
+  req: { headers: Record<string, string | string[] | undefined> },
+  sessionCode: string,
+): boolean {
+  if (hostCookie(req) === sessionCode) return true;
+  const site = String(req.headers["sec-fetch-site"] ?? "");
+  const dest = String(req.headers["sec-fetch-dest"] ?? "");
+  return site === "same-origin" && (dest === "document" || dest === "");
+}
+
 function send(ws: WebSocket, msg: SignallingMessage): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
 function cleanupPeer(session: Session, peer: Peer): void {
   if (peer.role === "host") {
+    if (session.host !== peer) return;
     for (const c of session.controllers.values()) {
       send(c.ws, { type: "error", message: "host_disconnected" });
       c.ws.close();
@@ -112,12 +159,14 @@ function publicBaseFromRequest(req: {
 async function serveFile(
   res: import("node:http").ServerResponse,
   filePath: string,
+  extraHeaders: Record<string, string> = {},
 ): Promise<boolean> {
   try {
     const data = await readFile(filePath);
     res.writeHead(200, {
       "content-type": contentType(filePath),
       "cache-control": "no-cache",
+      ...extraHeaders,
     });
     res.end(data);
     return true;
@@ -231,12 +280,19 @@ const server = createServer(async (req, res) => {
   const sessionCode = sessionCodeFromPath(pathname);
   if (sessionCode) {
     const existing = sessions.get(sessionCode);
-    if (existing?.host) {
+    const isTv = isTvDocumentRequest(req, sessionCode);
+    if (existing?.host && !isTv) {
       res.writeHead(302, { location: `/c/${sessionCode}${url.search}` });
       res.end();
       return;
     }
-    if (await serveFile(res, path.join(hostDist, "index.html"))) return;
+    if (
+      await serveFile(res, path.join(hostDist, "index.html"), {
+        "set-cookie": hostCookieHeader(sessionCode, req),
+      })
+    ) {
+      return;
+    }
     res.writeHead(404).end("not found");
     return;
   }
@@ -269,16 +325,27 @@ wss.on("connection", (ws, req) => {
     }
 
     if (msg.type === "create_session") {
-      const sessionId = shortSessionId();
-      session = { id: sessionId, host: null, controllers: new Map() };
+      const requested =
+        typeof msg.sessionId === "string" && isSessionId(msg.sessionId)
+          ? msg.sessionId
+          : shortSessionId();
+      const existing = sessions.get(requested);
       peer = { ws, role: "host" };
-      session.host = peer;
-      sessions.set(sessionId, session);
-      const joinUrl = `${base}/${sessionId}`;
-      send(ws, { type: "session_created", sessionId, joinUrl });
+      if (existing) {
+        const previous = existing.host;
+        existing.host = peer;
+        session = existing;
+        if (previous && previous.ws !== ws) previous.ws.close();
+      } else {
+        session = { id: requested, host: peer, controllers: new Map() };
+        sessions.set(requested, session);
+      }
+      const live = session;
+      const joinUrl = `${base}/${live.id}`;
+      send(ws, { type: "session_created", sessionId: live.id, joinUrl });
       send(ws, {
         type: "joined",
-        sessionId,
+        sessionId: live.id,
         playerId: "host",
         role: "host",
       });
