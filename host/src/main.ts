@@ -43,7 +43,6 @@ import {
   createHudState,
   HUD_MAX_SHOTS,
   HUD_POINTS_PER_HIT,
-  setHudShots,
   registerHudHit,
 } from "./hud";
 import { renderHudDom } from "./hudDom";
@@ -66,7 +65,6 @@ let sprites: SpriteBank | null = null;
 let dogShow: { mode: "laugh" | "got"; t: number; playerId: string } | null =
   null;
 const hud = createHudState();
-let hudShotsPlayerId: string | null = null;
 const skyClouds = createSkyClouds(8);
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
@@ -223,14 +221,14 @@ function draw(): void {
     drawDog(ctx, sprites, w, h, dogShow.mode, dogShow.t);
   }
 
-  renderHudDom(hud);
+  renderHudDom(hud, [...players.values()]);
 }
 
 function renderPlayers(): void {
   playersEl.innerHTML = [...players.values()]
     .map(
       (p) =>
-        `<div style="color:${p.color}">● P${p.index + 1} · ${p.transport} · ${p.shots}/${HUD_MAX_SHOTS}</div>`,
+        `<div style="color:${p.color}">● ${p.index + 1}P · ${p.transport} · ${p.shots}/${HUD_MAX_SHOTS} · ${String(p.score).padStart(6, "0")}</div>`,
     )
     .join("");
 }
@@ -314,13 +312,6 @@ function sendAmmo(playerId: string): void {
   peer.send({ type: "ammo", shots: p.shots });
 }
 
-function syncHudShotsFrom(playerId: string): void {
-  const p = players.get(playerId);
-  if (!p) return;
-  hudShotsPlayerId = playerId;
-  setHudShots(hud, p.shots);
-}
-
 function startDogForPlayer(p: PlayerRuntime): void {
   if (dogShow) {
     p.awaitingDog = true;
@@ -351,9 +342,6 @@ function refillPlayerShots(playerId: string): void {
   p.awaitingDog = false;
   p.flightHits = 0;
   sendAmmo(playerId);
-  if (hudShotsPlayerId === playerId || players.size === 1) {
-    syncHudShotsFrom(playerId);
-  }
 }
 
 /**
@@ -588,7 +576,6 @@ function completeCalibCapture(
     : result.reason;
   peer.send({ type: "calib_done", ok: result.ok, reason: summary });
   peer.send({ type: "ammo", shots: p.shots });
-  syncHudShotsFrom(p.id);
   setCalibResult(
     result.ok
       ? `Calibration ${quality} · grip: ${result.gripLabel} · held-out accuracy ±${result.errorPx.toFixed(0)}px`
@@ -907,7 +894,6 @@ function addPlayer(playerId: string): void {
 
       p.shots = Math.max(0, p.shots - 1);
       sendAmmo(p.id);
-      syncHudShotsFrom(p.id);
 
       if (result.hitId) {
         const hitId = result.hitId;

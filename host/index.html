@@ -36,10 +36,15 @@
               <span id="hud-round">ROUND 1</span>
             </div>
             <div class="hud-box hud-shot">
-              <div class="hud-bullets" id="hud-bullets">
-                <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
-                <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
-                <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
+              <div class="hud-players" id="hud-shots" data-ids="_">
+                <div class="hud-player-row solo" data-player="_">
+                  <span class="hud-player-tag">1P</span>
+                  <div class="hud-bullets">
+                    <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
+                    <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
+                    <img class="hud-bullet on" src="/sprites/hud/bullet.png" alt="" />
+                  </div>
+                </div>
               </div>
               <img class="hud-caption" src="/sprites/hud/label_shot.png" alt="SHOT" />
             </div>
@@ -63,13 +68,18 @@
             <div class="hud-bar"><i></i></div>
           </div>
           <div class="hud-box hud-score">
-            <div class="hud-score-digits" id="hud-score">
-              <img src="/sprites/hud/digits/0.png" alt="0" />
-              <img src="/sprites/hud/digits/0.png" alt="0" />
-              <img src="/sprites/hud/digits/0.png" alt="0" />
-              <img src="/sprites/hud/digits/0.png" alt="0" />
-              <img src="/sprites/hud/digits/0.png" alt="0" />
-              <img src="/sprites/hud/digits/0.png" alt="0" />
+            <div class="hud-players" id="hud-scores" data-ids="_">
+              <div class="hud-player-row solo" data-player="_">
+                <span class="hud-player-tag">1P</span>
+                <div class="hud-score-digits">
+                  <img src="/sprites/hud/digits/0.png" alt="0" />
+                  <img src="/sprites/hud/digits/0.png" alt="0" />
+                  <img src="/sprites/hud/digits/0.png" alt="0" />
+                  <img src="/sprites/hud/digits/0.png" alt="0" />
+                  <img src="/sprites/hud/digits/0.png" alt="0" />
+                  <img src="/sprites/hud/digits/0.png" alt="0" />
+                </div>
+              </div>
             </div>
             <img class="hud-caption" src="/sprites/hud/label_score.png" alt="SCORE" />
           </div>

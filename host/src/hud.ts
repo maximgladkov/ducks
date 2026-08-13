@@ -5,6 +5,14 @@ export type HudState = {
   score: number;
 };
 
+export type HudPlayerView = {
+  id: string;
+  index: number;
+  color: string;
+  shots: number;
+  score: number;
+};
+
 export const HUD_HIT_SLOTS = 10;
 export const HUD_MAX_SHOTS = 3;
 export const HUD_POINTS_PER_HIT = 1000;
