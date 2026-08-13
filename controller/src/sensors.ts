@@ -262,7 +262,8 @@ export class MotionPipeline {
   private readScreenAngle(): void {
     const fromApi = screen.orientation?.angle;
     const legacy = (window as unknown as { orientation?: number }).orientation;
-    this.screenAngle = fromApi ?? legacy ?? 0;
+    const raw = Number(fromApi ?? legacy ?? 0);
+    this.screenAngle = ((raw % 360) + 360) % 360;
   }
 
   private dropOrientationSensor(): void {
@@ -429,6 +430,7 @@ export class MotionPipeline {
     }
     this.lastRawQ = q;
     this.lastEmitT = t;
+    this.readScreenAngle();
     const fitted = this.rateFit.update(q, t / 1000);
     const framed = toScreenFrame(q, fitted, this.screenAngle);
     this.handlers.onSample(framed.q, framed.w, t, this.rateFit.quality());

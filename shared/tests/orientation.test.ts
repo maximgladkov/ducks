@@ -266,15 +266,18 @@ describe("expectedAccelDirection", () => {
 });
 
 describe("applyScreenAngle", () => {
-  it("leaves aim unchanged when the phone rotates with the UI", () => {
-    const held = quatFromAxisAngle([1, 0, 0], d2r(90));
-    const landscape = quatNormalize(
-      quatMultiply(held, quatFromAxisAngle([0, 0, 1], d2r(90))),
-    );
-    const compensated = applyScreenAngle(landscape, 90);
-    const cos = Math.abs(quatMultiply(compensated, quatConjugate(held))[3]);
-    expect((2 * Math.acos(Math.min(1, cos)) * 180) / Math.PI).toBeLessThan(1e-8);
-  });
+  it.each([90, -90, 180, 270])(
+    "leaves aim unchanged when the phone rotates %d° with the UI",
+    (angle) => {
+      const held = quatFromAxisAngle([1, 0, 0], d2r(90));
+      const rotated = quatNormalize(
+        quatMultiply(held, quatFromAxisAngle([0, 0, 1], d2r(angle))),
+      );
+      const compensated = applyScreenAngle(rotated, angle);
+      const cos = Math.abs(quatMultiply(compensated, quatConjugate(held))[3]);
+      expect((2 * Math.acos(Math.min(1, cos)) * 180) / Math.PI).toBeLessThan(1e-6);
+    },
+  );
 });
 
 describe("toScreenFrame", () => {

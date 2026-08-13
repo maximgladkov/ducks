@@ -74,7 +74,12 @@ export function deviceOrientationToQuaternion(
     cZ * cX * cY - sZ * sX * sY,
   ]);
 
-  return screenAngleDeg === 0 ? q : applyScreenAngle(q, screenAngleDeg);
+  return applyScreenAngle(q, screenAngleDeg);
+}
+
+export function normalizeScreenAngle(deg: number): number {
+  if (!Number.isFinite(deg)) return 0;
+  return ((deg % 360) + 360) % 360;
 }
 
 /**
@@ -82,7 +87,9 @@ export function deviceOrientationToQuaternion(
  * the same aim regardless of how the OS has rotated the UI.
  */
 export function applyScreenAngle(q: Quat, screenAngleDeg: number): Quat {
-  const spin = quatFromAxisAngle([0, 0, 1], -degToRad(screenAngleDeg));
+  const angle = normalizeScreenAngle(screenAngleDeg);
+  if (angle === 0) return quatNormalize(q);
+  const spin = quatFromAxisAngle([0, 0, 1], -degToRad(angle));
   return quatNormalize(quatMultiply(q, spin));
 }
 
@@ -97,8 +104,9 @@ export function toScreenFrame(
   w: Vec3,
   screenAngleDeg: number,
 ): { q: Quat; w: Vec3 } {
-  if (screenAngleDeg === 0) return { q: quatNormalize(q), w };
-  const spin = quatFromAxisAngle([0, 0, 1], -degToRad(screenAngleDeg));
+  const angle = normalizeScreenAngle(screenAngleDeg);
+  if (angle === 0) return { q: quatNormalize(q), w };
+  const spin = quatFromAxisAngle([0, 0, 1], -degToRad(angle));
   return {
     q: quatNormalize(quatMultiply(q, spin)),
     w: quatRotateVec(quatConjugate(spin), w),

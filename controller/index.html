@@ -7,7 +7,6 @@
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
     />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>DUCK HUNT ZAPPER</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -19,21 +18,13 @@
   </head>
   <body>
     <div id="app">
-      <div id="hud">
-        <div class="brand">DUCK HUNT</div>
-        <div id="status">Connecting…</div>
-        <div id="warn" class="hidden"></div>
-        <div id="hint">Thumb the red pad to fire</div>
-      </div>
-      <div id="grip">
-        <div class="palm-zone" aria-hidden="true"></div>
-        <button id="trigger-left" class="trigger" type="button" data-state="idle" draggable="false">
-          TAP TO START
-        </button>
-        <button id="trigger-right" class="trigger" type="button" data-state="idle" draggable="false">
-          TAP TO START
-        </button>
-      </div>
+      <div class="brand">DUCK HUNT</div>
+      <div id="status">Connecting…</div>
+      <div id="warn" class="hidden"></div>
+      <button id="trigger" type="button" data-state="idle" draggable="false">
+        TAP TO START
+      </button>
+      <div id="hint">Hold two fingers to recentre</div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
