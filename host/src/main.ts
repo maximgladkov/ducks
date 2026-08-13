@@ -1257,16 +1257,16 @@ const { send } = connectSignalling(sigUrl, (msg: SignallingMessage) => {
 
 send({ type: "create_session" });
 
-window.addEventListener("pointerdown", () => sfx.unlock(), { once: false });
-window.addEventListener("keydown", () => sfx.unlock(), { once: false });
+const soundGate = document.getElementById("sound-gate");
 
-const enableSoundBtn = document.getElementById("enable-sound");
-enableSoundBtn?.addEventListener("click", () => {
-  sfx.unlock();
-  sfx.duckHit();
-  enableSoundBtn.textContent = "TV SOUND ON";
-  enableSoundBtn.setAttribute("disabled", "true");
-});
+async function enableTvSound(): Promise<void> {
+  const ok = await sfx.unlock();
+  if (ok) soundGate?.classList.add("hidden");
+}
+
+void enableTvSound();
+window.addEventListener("pointerdown", () => void enableTvSound());
+window.addEventListener("keydown", () => void enableTvSound());
 
 void loadSpriteBank()
   .then((bank) => {

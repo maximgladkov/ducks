@@ -126,26 +126,26 @@ body {
   box-shadow: inset -6px -6px 0 #003888, inset 6px 6px 0 #3cbcfc;
 }
 
-@media (orientation: landscape) {
-  #app {
-    gap: 8px;
-  }
+#rotate {
+  display: none;
+}
 
-  .brand {
-    font-size: 10px;
-    margin-top: 0;
-  }
-
-  #status {
-    font-size: 8px;
-  }
-
-  #hint {
-    font-size: 6px;
-  }
-
-  #trigger {
-    font-size: 22px;
+@media (orientation: landscape) and (pointer: coarse) {
+  #rotate {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: #000000f5;
+    color: var(--yellow);
+    font-size: 14px;
+    letter-spacing: 0.1em;
+    text-align: center;
+    text-shadow: 3px 3px 0 #000;
+    line-height: 1.6;
   }
 }
 

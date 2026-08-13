@@ -287,12 +287,37 @@ body {
   font-size: 8px;
 }
 
-#lag-flash {
+#sound-gate {
   position: absolute;
   inset: 0;
-  z-index: 40;
-  background: #ffffff;
-  pointer-events: none;
+  z-index: 80;
+  background: #000000f2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+#sound-gate.hidden {
+  display: none !important;
+}
+
+.sound-gate-title {
+  font-size: clamp(16px, 3.5vw, 32px);
+  color: var(--yellow);
+  letter-spacing: 0.12em;
+  text-shadow: 4px 4px 0 #000;
+}
+
+.sound-gate-cta {
+  font-size: clamp(10px, 2vw, 16px);
+  color: var(--white);
+  letter-spacing: 0.08em;
+  text-align: center;
+  line-height: 1.6;
 }
 
 #toggle-debug {

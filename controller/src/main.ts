@@ -170,10 +170,15 @@ async function arm(): Promise<void> {
   setStatus(`Ready · ${motion.getMode()}`);
   setHint(IDLE_HINT);
   wakeLock = await requestWakeLock();
+  const orientation = screen.orientation as ScreenOrientation & {
+    lock?: (type: string) => Promise<void>;
+  };
   try {
-    screen.orientation?.unlock?.();
+    await orientation.lock?.("portrait");
   } catch {
-    /* optional */
+    try {
+      await orientation.lock?.("portrait-primary");
+    } catch {}
   }
 }
 

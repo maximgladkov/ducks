@@ -17,12 +17,19 @@ export class Sfx {
     return !!this.ctx && this.ctx.state === "running";
   }
 
-  unlock(): void {
+  async unlock(): Promise<boolean> {
     const ctx = this.ensure();
-    if (!ctx) return;
-    if (ctx.state === "suspended") void ctx.resume();
+    if (!ctx) return false;
+    if (ctx.state === "suspended") {
+      try {
+        await ctx.resume();
+      } catch {
+        return false;
+      }
+    }
     this.bakeNoise(ctx);
     void this.loadSamples();
+    return ctx.state === "running";
   }
 
   private ensure(): AudioContext | null {
