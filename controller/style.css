@@ -2,11 +2,11 @@
   --sky: #5c94fc;
   --grass: #00a800;
   --dirt: #503000;
-  --nes-black: #000;
-  --nes-white: #fcfcfc;
-  --nes-yellow: #fcb400;
-  --nes-red: #e40058;
-  --nes-blue: #0058f8;
+  --black: #000;
+  --white: #fcfcfc;
+  --yellow: #fcb400;
+  --red: #e40058;
+  --blue: #0058f8;
   --muted: #d0d0d0;
 }
 
@@ -22,7 +22,7 @@ body {
   height: 100dvh;
   background:
     linear-gradient(#5c94fc 0 58%, #00a800 58% 82%, #503000 82% 100%);
-  color: var(--nes-white);
+  color: var(--white);
   font-family: "Press Start 2P", "Courier New", monospace;
   overscroll-behavior: none;
   touch-action: none;
@@ -54,7 +54,7 @@ body {
 .brand {
   text-align: center;
   font-size: 14px;
-  color: var(--nes-yellow);
+  color: var(--yellow);
   letter-spacing: 0.08em;
   text-shadow: 3px 3px 0 #000;
   margin-top: 4px;
@@ -69,7 +69,7 @@ body {
 #status {
   font-size: 10px;
   line-height: 1.6;
-  color: var(--nes-white);
+  color: var(--white);
   text-shadow: 2px 2px 0 #000;
 }
 
@@ -80,11 +80,11 @@ body {
 }
 
 #warn {
-  color: var(--nes-yellow);
+  color: var(--yellow);
   font-size: 8px;
   line-height: 1.5;
   padding: 10px;
-  border: 3px solid var(--nes-yellow);
+  border: 3px solid var(--yellow);
   background: #000;
 }
 
@@ -99,9 +99,9 @@ body {
   font-weight: 400;
   font-size: 26px;
   letter-spacing: 0.12em;
-  color: var(--nes-white);
+  color: var(--white);
   text-shadow: 2px 2px 0 #000;
-  background: var(--nes-red);
+  background: var(--red);
   box-shadow: inset -6px -6px 0 #880000, inset 6px 6px 0 #fc7460;
   appearance: none;
   -webkit-appearance: none;
@@ -122,7 +122,7 @@ body {
 
 #trigger[data-state="idle"] {
   font-size: 15px;
-  background: var(--nes-blue);
+  background: var(--blue);
   box-shadow: inset -6px -6px 0 #003888, inset 6px 6px 0 #3cbcfc;
 }
 

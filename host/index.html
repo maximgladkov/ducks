@@ -14,11 +14,11 @@
   </head>
   <body>
     <div id="app">
-      <canvas id="game"></canvas>
+      <canvas id="sky"></canvas>
       <div id="crosshairs"></div>
       <div id="overlay">
         <div id="qr-panel">
-          <div class="nes-label">PLAYER</div>
+          <div class="pixel-label">PLAYER</div>
           <h1>DUCK HUNT</h1>
           <p>SCAN TO JOIN ZAPPER</p>
           <canvas id="qr"></canvas>
@@ -29,7 +29,8 @@
         <div id="calib-result" class="hidden"></div>
         <div id="scoreboard" class="hidden"></div>
       </div>
-      <div id="nes-hud" aria-label="Game status">
+      <canvas id="game"></canvas>
+      <div id="game-hud" aria-label="Game status">
         <div class="hud-inner">
           <div class="hud-shot-wrap">
             <div class="hud-round">
@@ -52,20 +53,22 @@
           <div class="hud-box hud-hit">
             <div class="hud-hit-row">
               <img class="hud-hit-label" src="/sprites/hud/label_hit.png" alt="HIT" />
-              <div class="hud-ducks" id="hud-ducks">
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
-                <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+              <div class="hud-hit-track">
+                <div class="hud-ducks" id="hud-ducks">
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                  <img class="hud-duck" src="/sprites/hud/duck_white.png" data-white="/sprites/hud/duck_white.png" data-red="/sprites/hud/duck_red.png" alt="" />
+                </div>
+                <div class="hud-bar" id="hud-pass"><i></i></div>
               </div>
             </div>
-            <div class="hud-bar"><i></i></div>
           </div>
           <div class="hud-box hud-score">
             <div class="hud-players" id="hud-scores" data-ids="_">
@@ -110,6 +113,7 @@
           </div>
         </div>
       </div>
+      <div id="game-banner" class="hidden"></div>
       <div id="debug" class="hidden"></div>
       <div id="lag-flash" class="hidden"></div>
       <button id="toggle-debug" type="button">DBG</button>

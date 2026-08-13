@@ -50,6 +50,15 @@ import {
 } from "@duckhunt/shared";
 import { HUD_MAX_SHOTS } from "./hud";
 import { diagEvery, diagLog, round, roundAll } from "./diag";
+import {
+  PLAY_H,
+  STAGE_H,
+  STAGE_W,
+  duckSpeed,
+  pickDuckKind,
+  type DuckKind,
+  type GameMode,
+} from "./rules";
 
 export type Target = {
   id: string;
@@ -64,8 +73,11 @@ export type Target = {
   life: number;
   flash: number;
   falling: boolean;
+  escaping: boolean;
   stationary: boolean;
-  kind: "black" | "brown" | "blue";
+  turnIn: number;
+  kind: DuckKind;
+  tag?: "titleA" | "titleB";
 };
 
 export type PlayerRuntime = {
@@ -339,9 +351,12 @@ export function handlePlayerEvent(
       return { hitId: null, miss: false };
     }
     const fired = aimAtEventTime(p, event.t, settings, screen, targets);
+    const hittable = targets.filter(
+      (t) => t.flash <= 0 && !t.falling && !t.escaping,
+    );
     const hitId = hitscan(
       fired,
-      targets.map((t) => ({
+      hittable.map((t) => ({
         id: t.id,
         x: t.x,
         y: t.y,
@@ -1229,135 +1244,218 @@ function worstCalibPoint(
   return worst;
 }
 
-export function spawnMovingTarget(
-  screen: Vec2,
-  id: string,
-  round = 1,
-): Target {
-  const fromLeft = Math.random() < 0.5;
-  const difficulty = Math.max(0, round - 1);
-  const speedScale = 1 + difficulty * 0.22;
-  const sizeScale = Math.max(0.55, 1 - difficulty * 0.07);
-  const radius = (18 + Math.random() * 16) * sizeScale;
-  const speed = (100 + Math.random() * 170) * speedScale;
-  const kinds = ["black", "brown", "blue"] as const;
-  const playH = screen[1] * (184 / 240);
-  const nearBand = Math.max(0.08, 0.2 - difficulty * 0.015);
-  const farBand = Math.min(0.72, 0.55 + difficulty * 0.04);
+function playHOf(screen: Vec2): number {
+  return screen[1] * (PLAY_H / STAGE_H);
+}
+
+function blankTarget(partial: Partial<Target> & Pick<Target, "id" | "x" | "y" | "kind">): Target {
   return {
-    id,
-    x: fromLeft ? -radius - 10 : screen[0] + radius + 10,
-    y: playH * (nearBand + Math.random() * (farBand - nearBand)),
-    radius,
-    vx: fromLeft ? speed : -speed,
+    radius: 24,
+    vx: 0,
     vy: 0,
-    phase: Math.random() * Math.PI * 2,
-    amp: (35 + Math.random() * 75) * (1 + difficulty * 0.04),
+    phase: 0,
+    amp: 0,
     baseY: 0,
     life: 0,
     flash: 0,
     falling: false,
+    escaping: false,
     stationary: false,
-    kind: kinds[Math.floor(Math.random() * kinds.length)]!,
+    turnIn: 0,
+    ...partial,
   };
+}
+
+function skyFloor(playH: number, pad: number): number {
+  return playH * 0.62 - pad * 0.15;
+}
+
+export function spawnHuntDuck(
+  screen: Vec2,
+  id: string,
+  round: number,
+  mode: GameMode = "A",
+): Target {
+  const kind = pickDuckKind();
+  const playH = playHOf(screen);
+  const speed = duckSpeed(round, kind, mode) * (screen[0] / STAGE_W);
+  const angle = -Math.PI * (0.28 + Math.random() * 0.44);
+  const twitch = kind === "brown" ? 1.5 : kind === "blue" ? 1.1 : 0.75;
+  const turnMul = mode === "B" ? 1.7 : 1;
+  const dir = Math.random() < 0.5 ? 1 : -1;
+  const radius = 22 + Math.random() * 6;
+  return blankTarget({
+    id,
+    x: screen[0] * (0.22 + Math.random() * 0.56),
+    y: skyFloor(playH, radius) - 8,
+    radius,
+    vx: Math.cos(angle) * speed * dir,
+    vy: Math.sin(angle) * speed,
+    turnIn: ((0.7 + Math.random() * 1.4) / twitch) * turnMul,
+    kind,
+  });
+}
+
+export function spawnTitleDucks(screen: Vec2): Target[] {
+  const playH = playHOf(screen);
+  const y = playH * 0.42;
+  const radius = 28;
+  return [
+    blankTarget({
+      id: "titleA",
+      x: screen[0] * 0.32,
+      y,
+      radius,
+      baseY: y,
+      amp: 10,
+      phase: 0,
+      stationary: true,
+      kind: "black",
+      tag: "titleA",
+    }),
+    blankTarget({
+      id: "titleB",
+      x: screen[0] * 0.68,
+      y,
+      radius,
+      baseY: y,
+      amp: 10,
+      phase: Math.PI,
+      stationary: true,
+      kind: "blue",
+      tag: "titleB",
+    }),
+  ];
 }
 
 export function spawnStationaryGrid(screen: Vec2): Target[] {
   const targets: Target[] = [];
   const cols = 4;
   const rows = 3;
-  const kinds = ["black", "brown", "blue"] as const;
+  const kinds: DuckKind[] = ["black", "brown", "blue"];
   let n = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      targets.push({
-        id: `s${n++}`,
-        x: ((c + 1) / (cols + 1)) * screen[0],
-        y: ((r + 1) / (rows + 1)) * screen[1] * (184 / 240) * 0.85,
-        radius: 24,
-        vx: 0,
-        vy: 0,
-        phase: 0,
-        amp: 0,
-        baseY: 0,
-        life: 0,
-        flash: 0,
-        falling: false,
-        stationary: true,
-        kind: kinds[n % kinds.length]!,
-      });
+      targets.push(
+        blankTarget({
+          id: `s${n}`,
+          x: ((c + 1) / (cols + 1)) * screen[0],
+          y: ((r + 1) / (rows + 1)) * playHOf(screen) * 0.85,
+          radius: 24,
+          stationary: true,
+          kind: kinds[n % kinds.length]!,
+        }),
+      );
+      n += 1;
     }
   }
   return targets;
 }
 
-export function updateTargets(
+export function markEscaping(targets: Target[]): Target[] {
+  return targets.map((t) => {
+    if (t.flash > 0 || t.falling || t.stationary || t.escaping) return t;
+    const speed = Math.max(160, Math.hypot(t.vx, t.vy) * 1.25);
+    return { ...t, escaping: true, vy: -speed, vx: t.vx * 0.25 };
+  });
+}
+
+export function duckCounts(targets: Target[]): {
+  flying: number;
+  flashing: number;
+  falling: number;
+  escaping: number;
+} {
+  let flying = 0;
+  let flashing = 0;
+  let falling = 0;
+  let escaping = 0;
+  for (const t of targets) {
+    if (t.tag) continue;
+    if (t.flash > 0) flashing += 1;
+    else if (t.falling) falling += 1;
+    else if (t.escaping) escaping += 1;
+    else if (!t.stationary) flying += 1;
+  }
+  return { flying, flashing, falling, escaping };
+}
+
+export function stepTargets(
   targets: Target[],
   screen: Vec2,
   dt: number,
-  stationaryMode: boolean,
-  nextId: () => string,
-  round = 1,
-): Target[] {
-  const playH = screen[1] * (184 / 240);
-  let next = targets
-    .map((t) => {
-      if (t.flash > 0) {
-        const flash = Math.max(0, t.flash - dt * 3.5);
-        if (flash <= 0) {
-          return {
-            ...t,
-            flash: 0,
-            falling: true,
-            vy: 80,
-            life: t.life + dt,
-          };
-        }
-        return { ...t, flash, life: t.life + dt };
+  mode: GameMode = "A",
+): { next: Target[]; escaped: Target[] } {
+  const playH = playHOf(screen);
+  const escaped: Target[] = [];
+  const next: Target[] = [];
+  for (const src of targets) {
+    const t = { ...src, life: src.life + dt };
+    if (t.flash > 0) {
+      t.flash = Math.max(0, t.flash - dt * 3.5);
+      if (t.flash <= 0) {
+        t.falling = true;
+        t.vy = 80;
       }
-      if (t.falling) {
-        const vy = t.vy + 520 * dt;
-        return {
-          ...t,
-          y: t.y + vy * dt,
-          vy,
-          vx: t.vx * 0.98,
-          x: t.x + t.vx * dt * 0.25,
-          life: t.life + dt,
-        };
-      }
-      if (t.stationary) return { ...t, life: t.life + dt };
-      if (t.baseY === 0) t.baseY = t.y;
-      const life = t.life + dt;
-      const bobRate = 2 + Math.max(0, round - 1) * 0.12;
-      const y = t.baseY + Math.sin(life * bobRate + t.phase) * t.amp;
-      const vy = Math.cos(life * bobRate + t.phase) * t.amp * bobRate;
-      return { ...t, x: t.x + t.vx * dt, y, vy, life };
-    })
-    .filter((t) => {
-      if (t.falling) return t.y < playH + 40;
-      if (t.flash > 0) return true;
-      if (t.stationary) return true;
-      return t.x > -80 && t.x < screen[0] + 80;
-    });
-
-  if (!stationaryMode) {
-    const moving = next.filter(
-      (t) => !t.stationary && t.flash <= 0 && !t.falling,
-    );
-    while (moving.length < 4) {
-      const t = spawnMovingTarget(screen, nextId(), round);
       next.push(t);
-      moving.push(t);
+      continue;
     }
-  } else {
-    const alive = next.filter(
-      (t) => t.stationary && !t.falling && t.flash <= 0,
-    );
-    if (alive.length === 0) {
-      next = spawnStationaryGrid(screen);
+    if (t.falling) {
+      t.vy += 520 * dt;
+      t.y += t.vy * dt;
+      t.vx *= 0.98;
+      t.x += t.vx * dt * 0.25;
+      if (t.y < playH + 40) next.push(t);
+      continue;
     }
+    if (t.escaping) {
+      t.y += t.vy * dt;
+      t.x += t.vx * dt;
+      if (t.y > -80) next.push(t);
+      else escaped.push(t);
+      continue;
+    }
+    if (t.stationary) {
+      if (t.amp > 0) {
+        const y = (t.baseY || t.y) + Math.sin(t.life * 2.2 + t.phase) * t.amp;
+        t.y = y;
+        t.vy = Math.cos(t.life * 2.2 + t.phase) * t.amp * 2.2;
+      }
+      next.push(t);
+      continue;
+    }
+    t.turnIn -= dt;
+    if (t.turnIn <= 0) {
+      const speed =
+        Math.hypot(t.vx, t.vy) ||
+        duckSpeed(1, t.kind, mode) * (screen[0] / STAGE_W);
+      const twitch = t.kind === "brown" ? 1.5 : t.kind === "blue" ? 1.1 : 0.75;
+      const turnMul = mode === "B" ? 1.7 : 1;
+      const spread = mode === "B" ? 0.7 : 1.05;
+      const heading = Math.atan2(t.vy, t.vx) + (Math.random() - 0.5) * Math.PI * spread;
+      t.vx = Math.cos(heading) * speed;
+      t.vy = Math.sin(heading) * speed;
+      t.turnIn = ((0.7 + Math.random() * 1.4) / twitch) * turnMul;
+    }
+    t.x += t.vx * dt;
+    t.y += t.vy * dt;
+    const pad = t.radius;
+    if (t.x < pad) {
+      t.x = pad;
+      t.vx = Math.abs(t.vx);
+    } else if (t.x > screen[0] - pad) {
+      t.x = screen[0] - pad;
+      t.vx = -Math.abs(t.vx);
+    }
+    const floor = skyFloor(playH, pad);
+    if (t.y < pad) {
+      t.y = pad;
+      t.vy = Math.abs(t.vy);
+    } else if (t.y > floor) {
+      t.y = floor;
+      t.vy = -Math.abs(t.vy);
+    }
+    next.push(t);
   }
-
-  return next;
+  return { next, escaped };
 }

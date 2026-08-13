@@ -13,10 +13,12 @@ import {
   CALIB_REFRESH_COUNT,
   applyStoredCalibration,
   createPlayer,
+  duckCounts,
   finishCalibration,
   handlePlayerEvent,
   ingestSample,
   loadSettings,
+  markEscaping,
   averageQuats,
   quatAngularSpread,
   quatDriftRate,
@@ -26,9 +28,11 @@ import {
   sampleCalibQuat,
   samplePlane,
   saveSettings,
+  spawnHuntDuck,
   spawnStationaryGrid,
+  spawnTitleDucks,
+  stepTargets,
   updatePlayerFrame,
-  updateTargets,
   type PlayerRuntime,
   type Target,
 } from "./game";
@@ -39,13 +43,24 @@ import {
   defaultSignallingUrl,
 } from "./transport";
 import { sfx } from "./audio";
-import {
-  createHudState,
-  HUD_MAX_SHOTS,
-  HUD_POINTS_PER_HIT,
-  registerHudHit,
-} from "./hud";
+import { createHudState, HUD_MAX_SHOTS } from "./hud";
 import { renderHudDom } from "./hudDom";
+import {
+  canShoot,
+  chooseMode,
+  consumeShot,
+  createMatch,
+  enterTitle,
+  INTRO_ALERT,
+  INTRO_SNIFF,
+  noteSpawned,
+  recordHit,
+  recordMiss,
+  sniffProgress,
+  tickMatch,
+  type MatchCue,
+} from "./match";
+import { WAVE_SHOTS, duckPoints, passLine } from "./rules";
 import {
   createSkyClouds,
   drawSkyClouds,
@@ -67,12 +82,13 @@ const DEBUG_UI =
 document.documentElement.classList.toggle("debug-ui", DEBUG_UI);
 
 let sprites: SpriteBank | null = null;
-let dogShow: { mode: "laugh" | "got"; t: number; playerId: string } | null =
-  null;
+const match = createMatch();
 const hud = createHudState();
 const skyClouds = createSkyClouds(8);
+const skyCanvas = document.getElementById("sky") as HTMLCanvasElement;
+const skyCtx = skyCanvas.getContext("2d")!;
 const canvas = document.getElementById("game") as HTMLCanvasElement;
-const ctx = canvas.getContext("2d")!;
+const ctx = canvas.getContext("2d", { alpha: true })!;
 const appEl = document.getElementById("app")!;
 const crossLayer = document.getElementById("crosshairs")!;
 const qrCanvas = document.getElementById("qr") as HTMLCanvasElement;
@@ -90,6 +106,7 @@ const calibStatus = document.getElementById("calib-status")!;
 const calibResult = document.getElementById("calib-result")!;
 const debugEl = document.getElementById("debug")!;
 const toggleDebug = document.getElementById("toggle-debug")!;
+const gameBanner = document.getElementById("game-banner");
 
 for (let i = 0; i < CALIB_FULL_COUNT; i++) {
   const pip = document.createElement("div");
@@ -139,6 +156,7 @@ const CALIB_MAX_DRIFT_DEG_PER_SEC = 3;
 const SENSOR_SETTLE_TIMEOUT_MS = 10000;
 let lagFlashAt: number | null = null;
 let lastCalibHoldSec: number | null = null;
+let floatScores: { x: number; y: number; text: string; t: number }[] = [];
 
 function startLagFlash(): void {
   const el = document.getElementById("lag-flash");
@@ -171,12 +189,21 @@ function screenSize(): [number, number] {
 
 function resize(): void {
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.floor(window.innerWidth * dpr);
-  canvas.height = Math.floor(window.innerHeight * dpr);
-  canvas.style.width = `${window.innerWidth}px`;
-  canvas.style.height = `${window.innerHeight}px`;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  setCloudScreen(window.innerWidth, window.innerHeight);
+  const cssW = window.innerWidth;
+  const cssH = window.innerHeight;
+  const bufW = Math.floor(cssW * dpr);
+  const bufH = Math.floor(cssH * dpr);
+  for (const [el, c] of [
+    [canvas, ctx],
+    [skyCanvas, skyCtx],
+  ] as const) {
+    el.width = bufW;
+    el.height = bufH;
+    el.style.width = `${cssW}px`;
+    el.style.height = `${cssH}px`;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  setCloudScreen(cssW, cssH);
   if (calibratingPlayerId !== null && !calibTarget.classList.contains("hidden")) {
     showCalibCorner(calibSeq);
   }
@@ -188,20 +215,107 @@ function nextTargetId(): string {
   return `t${targetSeq++}`;
 }
 
+function syncHud(): void {
+  hud.round = match.round;
+  hud.shots = match.phase === "wave" ? match.shots : WAVE_SHOTS;
+  hud.hits = match.hits;
+  hud.resolved = match.resolved;
+  hud.score = match.score;
+  hud.pass = passLine(match.round);
+}
+
+function ammoForPhase(): number {
+  if (match.phase === "wave") return match.shots;
+  if (match.phase === "title" || match.phase === "gameOver") return WAVE_SHOTS;
+  return 0;
+}
+
+function syncAmmo(): void {
+  const shots = ammoForPhase();
+  for (const p of players.values()) {
+    p.shots = shots;
+    peers.get(p.id)?.send({ type: "ammo", shots });
+  }
+}
+
+function applyCues(cues: MatchCue[]): void {
+  for (const cue of cues) {
+    if (cue.type === "spawnTitle") {
+      targets = spawnTitleDucks(screenSize());
+    } else if (cue.type === "spawnWave") {
+      const next: Target[] = [];
+      for (let i = 0; i < cue.count; i++) {
+        next.push(spawnHuntDuck(screenSize(), nextTargetId(), match.round, match.mode ?? "A"));
+      }
+      targets = next;
+      noteSpawned(match);
+    } else if (cue.type === "startFlyAway") {
+      targets = markEscaping(targets);
+    } else if (cue.type === "ammo") {
+      syncAmmo();
+    } else if (cue.type === "sfx") {
+      if (cue.name === "got") sfx.got();
+      else sfx.laugh();
+    } else if (cue.type === "perfect") {
+      for (const p of players.values()) p.score += cue.bonus;
+    }
+  }
+  syncHud();
+  syncAmmo();
+  renderPlayers();
+}
+
+function paintBanner(): void {
+  if (!gameBanner) return;
+  if (match.banner) {
+    gameBanner.textContent = match.banner;
+    gameBanner.classList.remove("hidden");
+  } else {
+    gameBanner.textContent = "";
+    gameBanner.classList.add("hidden");
+  }
+}
+
 function renderScoreboard(): void {
-  /* score drawn into NES HUD bar on canvas */
 }
 
 function draw(): void {
+  const [w, h] = screenSize();
   if (!sprites) {
-    ctx.fillStyle = "#3CBCFC";
-    ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    skyCtx.fillStyle = "#3CBCFC";
+    skyCtx.fillRect(0, 0, w, h);
+    ctx.clearRect(0, 0, w, h);
     return;
   }
-  const [w, h] = screenSize();
+  skyCtx.imageSmoothingEnabled = false;
   ctx.imageSmoothingEnabled = false;
-  drawMeadowBack(ctx, sprites, w, h);
-  drawSkyClouds(ctx, sprites, skyClouds);
+  ctx.clearRect(0, 0, w, h);
+
+  drawMeadowBack(skyCtx, sprites, w, h);
+  drawSkyClouds(skyCtx, sprites, skyClouds);
+
+  const playH = playfieldHeight(h);
+  if (match.skyTint) {
+    skyCtx.fillStyle = "rgba(252, 116, 180, 0.45)";
+    skyCtx.fillRect(0, 0, w, playH);
+  }
+
+  const dogT =
+    match.dogPose === "jump"
+      ? Math.max(0, match.phaseT - INTRO_SNIFF - INTRO_ALERT)
+      : match.phaseT;
+  const dogOpts = { hold: match.dogHold, walk: sniffProgress(match) };
+  if (match.dogPose === "jump") {
+    drawDog(skyCtx, sprites, w, h, "jump", dogT, dogOpts);
+  }
+
+  drawMeadowFg(skyCtx, sprites, w, h);
+  skyCtx.fillStyle = "#6B6B00";
+  skyCtx.fillRect(0, playH, w, h - playH);
+
+  if (match.dogPose === "sniff" || match.dogPose === "alert") {
+    drawDog(skyCtx, sprites, w, h, match.dogPose, dogT, dogOpts);
+  }
 
   for (const t of targets) {
     const frame = duckFrame(sprites, t.kind, {
@@ -221,16 +335,43 @@ function draw(): void {
     ctx.restore();
   }
 
-  drawMeadowFg(ctx, sprites, w, h);
-
-  const playH = playfieldHeight(h);
-  ctx.fillStyle = "#6B6B00";
-  ctx.fillRect(0, playH, w, h - playH);
-
-  if (dogShow) {
-    drawDog(ctx, sprites, w, h, dogShow.mode, dogShow.t);
+  if (match.dogPose === "got" || match.dogPose === "laugh") {
+    drawDog(ctx, sprites, w, h, match.dogPose, dogT, dogOpts);
   }
 
+  if (match.phase === "title") {
+    const titleSize = Math.max(14, Math.round(w * 0.024));
+    const subSize = Math.max(9, Math.round(w * 0.014));
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.imageSmoothingEnabled = false;
+    for (const t of targets) {
+      const title = t.tag === "titleA" ? "GAME A" : t.tag === "titleB" ? "GAME B" : null;
+      const sub = t.tag === "titleA" ? "1 DUCK" : t.tag === "titleB" ? "2 DUCKS" : null;
+      if (!title || !sub) continue;
+      const top = t.y + t.radius + 12;
+      ctx.font = `${titleSize}px "Press Start 2P"`;
+      ctx.fillStyle = "#fcfcfc";
+      ctx.fillText(title, t.x, top);
+      ctx.font = `${subSize}px "Press Start 2P"`;
+      ctx.fillStyle = "#fcb400";
+      ctx.fillText(sub, t.x, top + titleSize + 10);
+      ctx.fillStyle = "#bcbcbc";
+      ctx.fillText("3 SHOTS", t.x, top + titleSize + subSize + 20);
+    }
+  }
+
+  ctx.font = `${Math.max(10, Math.round(w * 0.018))}px "Press Start 2P"`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (const f of floatScores) {
+    ctx.globalAlpha = Math.max(0, 1 - f.t / 0.9);
+    ctx.fillStyle = "#fcfcfc";
+    ctx.fillText(f.text, f.x, f.y - f.t * 48);
+  }
+  ctx.globalAlpha = 1;
+
+  syncHud();
   renderHudDom(hud, [...players.values()]);
 }
 
@@ -373,39 +514,7 @@ function sendAmmo(playerId: string): void {
   const p = players.get(playerId);
   const peer = peers.get(playerId);
   if (!p || !peer) return;
-  peer.send({ type: "ammo", shots: p.shots });
-}
-
-function startDogForPlayer(p: PlayerRuntime): void {
-  if (dogShow) {
-    p.awaitingDog = true;
-    return;
-  }
-  p.awaitingDog = false;
-  const mode = p.flightHits > 0 ? "got" : "laugh";
-  dogShow = { mode, t: 0, playerId: p.id };
-  if (mode === "got") sfx.got();
-  else sfx.laugh();
-  p.flightHits = 0;
-}
-
-function maybeStartNextDog(): void {
-  if (dogShow) return;
-  for (const p of players.values()) {
-    if (p.awaitingDog) {
-      startDogForPlayer(p);
-      return;
-    }
-  }
-}
-
-function refillPlayerShots(playerId: string): void {
-  const p = players.get(playerId);
-  if (!p) return;
-  p.shots = HUD_MAX_SHOTS;
-  p.awaitingDog = false;
-  p.flightHits = 0;
-  sendAmmo(playerId);
+  peer.send({ type: "ammo", shots: ammoForPhase() });
 }
 
 /**
@@ -669,7 +778,10 @@ function completeCalibCapture(
         ? "Calibration OK — aim and shoot"
         : "Calibration failed — try again",
   });
-  peer.send({ type: "ammo", shots: p.shots });
+  peer.send({ type: "ammo", shots: ammoForPhase() });
+  if (result.ok && match.phase === "lobby") {
+    applyCues(enterTitle(match));
+  }
   if (DEBUG_UI) {
     setCalibResult(
       result.ok
@@ -786,7 +898,13 @@ function buildDebugHud(): void {
   stationary.checked = stationaryMode;
   stationary.onchange = () => {
     stationaryMode = stationary.checked;
-    targets = stationaryMode ? spawnStationaryGrid(screenSize()) : [];
+    if (stationaryMode) {
+      targets = spawnStationaryGrid(screenSize());
+    } else if (match.phase === "title") {
+      applyCues(enterTitle(match));
+    } else {
+      targets = [];
+    }
   };
 
   document.getElementById("recalibrate")!.onclick = () => {
@@ -883,15 +1001,6 @@ function frame(now: number): void {
   frameTime = now - lastFrame;
   fps = fps * 0.9 + (1000 / Math.max(1, frameTime)) * 0.1;
   lastFrame = now;
-  if (dogShow) {
-    dogShow = { ...dogShow, t: dogShow.t + dt };
-    if (dogShow.t > 1.6) {
-      const finishedId = dogShow.playerId;
-      dogShow = null;
-      refillPlayerShots(finishedId);
-      maybeStartNextDog();
-    }
-  }
 
   updateSkyClouds(skyClouds, dt);
 
@@ -911,14 +1020,30 @@ function frame(now: number): void {
     }
   }
 
-  targets = updateTargets(
-    targets,
-    screenSize(),
-    dt,
-    stationaryMode,
-    nextTargetId,
-    hud.round,
-  );
+  if (stationaryMode) {
+    const stepped = stepTargets(targets, screenSize(), dt);
+    targets = stepped.next;
+    const alive = targets.filter(
+      (t) => t.stationary && !t.falling && t.flash <= 0,
+    );
+    if (alive.length === 0) targets = spawnStationaryGrid(screenSize());
+  } else {
+    const huntMode = match.mode ?? "A";
+    const stepped = stepTargets(targets, screenSize(), dt, huntMode);
+    for (const left of stepped.escaped) {
+      if (left.escaping && !left.tag) recordMiss(match);
+    }
+    targets = stepped.next;
+    const cues = tickMatch(match, dt, duckCounts(targets));
+    if (cues.length) applyCues(cues);
+    else syncHud();
+  }
+
+  floatScores = floatScores
+    .map((f) => ({ ...f, t: f.t + dt }))
+    .filter((f) => f.t < 0.9);
+
+  paintBanner();
 
   for (const p of players.values()) {
     updatePlayerFrame(p, settings, screenSize(), targets, dt, DEBUG_UI && debugOpen);
@@ -971,9 +1096,26 @@ function addPlayer(playerId: string): void {
         return;
       }
 
-      if (event.type === "trigger_down" && p.shots <= 0) {
+      if (event.type !== "trigger_down") {
+        handlePlayerEvent(
+          p,
+          event,
+          settings,
+          screenSize(),
+          targets,
+          onCalibPoint,
+        );
         return;
       }
+
+      if (match.phase === "gameOver") {
+        for (const pl of players.values()) pl.score = 0;
+        applyCues(enterTitle(match));
+        syncAmmo();
+        return;
+      }
+
+      if (!stationaryMode && !canShoot(match)) return;
 
       const result = handlePlayerEvent(
         p,
@@ -984,25 +1126,43 @@ function addPlayer(playerId: string): void {
         onCalibPoint,
       );
 
-      if (event.type !== "trigger_down") return;
+      if (match.phase === "title") {
+        const hit = targets.find((t) => t.id === result.hitId);
+        if (hit?.tag === "titleA" || hit?.tag === "titleB") {
+          for (const pl of players.values()) pl.score = 0;
+          chooseMode(match, hit.tag === "titleA" ? "A" : "B");
+          targets = [];
+          syncHud();
+          syncAmmo();
+        }
+        renderPlayers();
+        return;
+      }
 
-      p.shots = Math.max(0, p.shots - 1);
-      sendAmmo(p.id);
+      if (!stationaryMode && !consumeShot(match)) return;
+      if (stationaryMode) {
+        p.shots = Math.max(0, p.shots - 1);
+        sendAmmo(p.id);
+      } else {
+        syncAmmo();
+      }
 
       if (result.hitId) {
         const hitId = result.hitId;
-        registerHudHit(hud);
-        p.flightHits += 1;
-        p.score += HUD_POINTS_PER_HIT;
-        sfx.duckHit();
-        targets = targets.map((t) =>
-          t.id === hitId ? { ...t, flash: 1, vx: t.vx * 0.2 } : t,
-        );
+        const duck = targets.find((t) => t.id === hitId);
+        if (duck && duck.flash <= 0 && !duck.falling) {
+          const pts = stationaryMode ? 1000 : duckPoints(match.round, duck.kind);
+          if (!stationaryMode) recordHit(match, pts);
+          p.score += pts;
+          sfx.duckHit();
+          sfx.fall();
+          floatScores.push({ x: duck.x, y: duck.y, text: String(pts), t: 0 });
+          targets = targets.map((t) =>
+            t.id === hitId ? { ...t, flash: 1, vx: t.vx * 0.2 } : t,
+          );
+        }
       }
-
-      if (p.shots <= 0) {
-        startDogForPlayer(p);
-      }
+      syncHud();
       renderPlayers();
       renderScoreboard();
     },

@@ -109,24 +109,22 @@ export function renderHudDom(
 ): void {
   const roundEl = document.getElementById("hud-round");
   if (roundEl) {
-    // Text rather than digit sprites, so a run that passes round 9 keeps counting.
     roundEl.textContent = `ROUND ${Math.max(1, Math.floor(hud.round))}`;
   }
 
   const views = viewsFor(hud, players);
-  const nesHud = document.getElementById("nes-hud");
+  const gameHud = document.getElementById("game-hud");
   const inner = document.querySelector(".hud-inner");
   const count = String(views.length);
   const multi = views.length > 1;
-  nesHud?.setAttribute("data-players", count);
+  gameHud?.setAttribute("data-players", count);
   inner?.classList.toggle("multi", multi);
 
   const shotsRoot = document.getElementById("hud-shots");
   if (shotsRoot) {
     const rows = ensureRows(shotsRoot, views, buildShotRow);
-    rows.forEach((row, i) => {
-      const p = views[i];
-      if (p) paintBullets(row, p.shots);
+    rows.forEach((row) => {
+      paintBullets(row, hud.shots);
     });
   }
 
@@ -137,16 +135,22 @@ export function renderHudDom(
       const p = views[i];
       if (p) {
         const digits = row.querySelector(".hud-score-digits");
-        if (digits) paintDigits(digits, p.score);
+        if (digits) paintDigits(digits, multi ? p.score : hud.score);
       }
     });
   }
 
   document.querySelectorAll<HTMLImageElement>("#hud-ducks .hud-duck").forEach((el, i) => {
-    const hit = i < HUD_HIT_SLOTS && !!hud.hits[i];
+    const hit = i < hud.resolved && i < HUD_HIT_SLOTS && !!hud.hits[i];
     const white = el.dataset.white ?? "/sprites/hud/duck_white.png";
     const red = el.dataset.red ?? "/sprites/hud/duck_red.png";
     el.src = hit ? red : white;
     el.classList.toggle("hit", hit);
   });
+
+  const pass = document.getElementById("hud-pass");
+  if (pass) {
+    const frac = Math.max(0, Math.min(1, hud.pass / HUD_HIT_SLOTS));
+    pass.style.setProperty("--pass", String(frac));
+  }
 }

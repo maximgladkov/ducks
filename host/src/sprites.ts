@@ -1,4 +1,6 @@
-export type DuckKind = "black" | "brown" | "blue";
+import type { DuckKind } from "./rules";
+
+export type { DuckKind };
 
 export type DuckFrames = {
   diag: HTMLImageElement[];
@@ -21,8 +23,12 @@ export type SpriteBank = {
   };
   ducks: Record<DuckKind, DuckFrames>;
   dog: {
+    sniff: HTMLImageElement[];
+    alert: HTMLImageElement[];
+    jump: HTMLImageElement[];
     laugh: HTMLImageElement[];
     got: HTMLImageElement[];
+    got2: HTMLImageElement;
   };
   ready: boolean;
 };
@@ -79,10 +85,18 @@ export async function loadSpriteBank(): Promise<SpriteBank> {
     black,
     brown,
     blue,
+    sniff0,
+    sniff1,
+    sniff2,
+    sniff3,
+    alert0,
+    jump0,
+    jump1,
     laugh0,
     laugh1,
     got0,
     got1,
+    got2,
   ] = await Promise.all([
     loadImage("meadow_back.png"),
     loadImage("meadow_fg.png"),
@@ -96,10 +110,18 @@ export async function loadSpriteBank(): Promise<SpriteBank> {
     loadDuck("black"),
     loadDuck("brown"),
     loadDuck("blue"),
+    loadImage("dog/sniff0.png"),
+    loadImage("dog/sniff1.png"),
+    loadImage("dog/sniff2.png"),
+    loadImage("dog/sniff3.png"),
+    loadImage("dog/alert0.png"),
+    loadImage("dog/jump0.png"),
+    loadImage("dog/jump1.png"),
     loadImage("dog/laugh0.png"),
     loadImage("dog/laugh1.png"),
     loadImage("dog/got0.png"),
     loadImage("dog/got1.png"),
+    loadImage("dog/got2.png"),
   ]);
 
   return {
@@ -116,8 +138,12 @@ export async function loadSpriteBank(): Promise<SpriteBank> {
     },
     ducks: { black, brown, blue },
     dog: {
+      sniff: [sniff0, sniff1, sniff2, sniff3],
+      alert: [alert0],
+      jump: [jump0, jump1],
       laugh: [laugh0, laugh1],
       got: [got0, got1],
+      got2,
     },
     ready: true,
   };

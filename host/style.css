@@ -2,10 +2,10 @@
   --sky: #5c94fc;
   --grass: #00a800;
   --dirt: #503000;
-  --nes-black: #000000;
-  --nes-white: #fcfcfc;
-  --nes-yellow: #fcb400;
-  --nes-red: #fc7460;
+  --black: #000000;
+  --white: #fcfcfc;
+  --yellow: #fcb400;
+  --red: #fc7460;
   --panel: #000000ee;
   --text: #fcfcfc;
   --muted: #bcbcbc;
@@ -32,14 +32,25 @@ body {
   height: 100vh;
 }
 
+#sky,
 #game {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
-  background: var(--sky);
   image-rendering: pixelated;
+}
+
+#sky {
+  z-index: 0;
+  background: var(--sky);
+}
+
+#game {
+  z-index: 2;
+  background: transparent;
+  pointer-events: none;
 }
 
 #crosshairs {
@@ -141,7 +152,7 @@ body {
 #overlay {
   position: absolute;
   inset: 0;
-  z-index: 4;
+  z-index: 1;
   pointer-events: none;
 }
 
@@ -151,14 +162,14 @@ body {
   left: 20px;
   padding: 14px 14px 16px;
   background: var(--panel);
-  border: 4px solid var(--nes-white);
+  border: 4px solid var(--white);
   box-shadow: 0 0 0 4px #000;
   pointer-events: auto;
   max-width: 260px;
 }
 
-.nes-label {
-  color: var(--nes-yellow);
+.pixel-label {
+  color: var(--yellow);
   font-size: 8px;
   letter-spacing: 0.12em;
   margin-bottom: 8px;
@@ -167,7 +178,7 @@ body {
 #qr-panel h1 {
   margin: 0 0 8px;
   font-size: 14px;
-  color: var(--nes-white);
+  color: var(--white);
   letter-spacing: 0.06em;
   line-height: 1.4;
 }
@@ -190,7 +201,7 @@ body {
 #join-url {
   margin-top: 8px;
   font-size: 10px;
-  color: var(--nes-yellow);
+  color: var(--yellow);
   word-break: break-all;
   line-height: 1.5;
   letter-spacing: 0.04em;
@@ -209,7 +220,7 @@ body {
   transform: translateX(-50%);
   padding: 12px 16px;
   background: #000;
-  border: 4px solid var(--nes-yellow);
+  border: 4px solid var(--yellow);
   font-size: 9px;
   line-height: 1.6;
   max-width: min(520px, 90vw);
@@ -239,7 +250,7 @@ body {
 #debug h2 {
   margin: 0 0 8px;
   font-size: 10px;
-  color: var(--nes-yellow);
+  color: var(--yellow);
 }
 
 #debug label {
@@ -267,7 +278,7 @@ body {
 #qr-panel button {
   pointer-events: auto;
   background: #0058f8;
-  color: var(--nes-white);
+  color: var(--white);
   border: 3px solid #000;
   box-shadow: inset -3px -3px 0 #003888;
   padding: 8px 10px;
@@ -301,14 +312,14 @@ html:not(.debug-ui) #debug {
 }
 
 #app.calibrating #qr-panel,
-#app.calibrating #nes-hud,
+#app.calibrating #game-hud,
 #app.calibrating #toggle-debug,
 #app.calibrating #crosshairs,
 #app.calibrating #calib-result {
   visibility: hidden;
 }
 
-#nes-hud {
+#game-hud {
   --hud-pad-x: clamp(12px, 4vw, 48px);
   --hud-pad-b: clamp(8px, 1.8vh, 20px);
   --hud-gap: clamp(12px, 2vw, 28px);
@@ -351,20 +362,20 @@ html:not(.debug-ui) #debug {
   grid-template-columns: minmax(150px, 0.24fr) minmax(200px, 0.44fr) minmax(190px, 0.32fr);
 }
 
-#nes-hud[data-players="2"] {
+#game-hud[data-players="2"] {
   --hud-icon-shot: clamp(16px, 3.6vh, 28px);
   --hud-icon-digit: clamp(14px, 3vh, 24px);
 }
 
-#nes-hud[data-players="3"],
-#nes-hud[data-players="4"] {
+#game-hud[data-players="3"],
+#game-hud[data-players="4"] {
   --hud-icon-shot: clamp(12px, 2.6vh, 20px);
   --hud-icon-digit: clamp(11px, 2.4vh, 18px);
   --hud-label: clamp(8px, 1.7vh, 12px);
 }
 
-#nes-hud[data-players="5"],
-#nes-hud[data-players="6"] {
+#game-hud[data-players="5"],
+#game-hud[data-players="6"] {
   --hud-icon-shot: clamp(10px, 2vh, 16px);
   --hud-icon-digit: clamp(9px, 1.8vh, 14px);
   --hud-label: clamp(7px, 1.4vh, 10px);
@@ -389,11 +400,6 @@ html:not(.debug-ui) #debug {
   z-index: 1;
 }
 
-/*
- * The other captions are NES sprites, but the original only ever spelled this one
- * "R=", so there is no ROUND sprite to cut letters from and no green digit either:
- * label and number are one run of text so they read as a single phrase.
- */
 #hud-round {
   font-family: "Press Start 2P", "Courier New", monospace;
   font-size: calc(var(--hud-label) * 1.05);
@@ -515,10 +521,19 @@ html:not(.debug-ui) #debug {
   flex: 0 0 auto;
 }
 
+.hud-hit-track {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 .hud-ducks {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   flex: 0 0 auto;
   gap: clamp(3px, 0.6vw, 8px);
 }
@@ -535,8 +550,14 @@ html:not(.debug-ui) #debug {
   position: relative;
   width: 100%;
   height: 5px;
-  margin-top: 4px;
   flex: 0 0 auto;
+  background: transparent;
+}
+
+.hud-bar i {
+  display: block;
+  width: calc(var(--pass, 0.6) * 100%);
+  height: 5px;
   background: repeating-linear-gradient(
     90deg,
     #3cbcfc 0 2px,
@@ -544,13 +565,19 @@ html:not(.debug-ui) #debug {
   );
 }
 
-.hud-bar i {
+#game-banner {
   position: absolute;
-  left: 30%;
-  top: -2px;
-  width: 2px;
-  height: 9px;
-  background: #fcfcfc;
+  left: 0;
+  right: 0;
+  top: 28%;
+  z-index: 5;
+  text-align: center;
+  font-size: clamp(18px, 4.2vw, 42px);
+  line-height: 1.2;
+  color: #fcfcfc;
+  text-shadow: 4px 4px 0 #000;
+  pointer-events: none;
+  letter-spacing: 0.06em;
 }
 
 .hud-score-digits {
@@ -623,7 +650,7 @@ html:not(.debug-ui) #debug {
   margin: -48px 0 0 -48px;
   border-radius: 50%;
   background: conic-gradient(
-    var(--nes-yellow) var(--hold, 0%),
+    var(--yellow) var(--hold, 0%),
     rgba(252, 252, 252, 0.18) 0
   );
   -webkit-mask-image: radial-gradient(
@@ -646,7 +673,7 @@ html:not(.debug-ui) #debug {
   height: 52px;
   margin: -26px 0 0 -26px;
   border-radius: 50%;
-  background: var(--nes-red);
+  background: var(--red);
   border: 4px solid #fcfcfc;
   box-shadow:
     0 0 0 3px #000,
@@ -700,7 +727,7 @@ html:not(.debug-ui) #debug {
 #calib-countdown {
   font-size: clamp(28px, 6vh, 52px);
   line-height: 1;
-  color: var(--nes-yellow);
+  color: var(--yellow);
   letter-spacing: 0.04em;
 }
 
@@ -708,7 +735,7 @@ html:not(.debug-ui) #debug {
   margin-top: 8px;
   font-size: clamp(9px, 1.8vh, 14px);
   line-height: 1.4;
-  color: var(--nes-white);
+  color: var(--white);
   letter-spacing: 0.06em;
 }
 
@@ -721,7 +748,7 @@ html:not(.debug-ui) #debug {
   width: min(560px, 80vw);
   padding: 20px 22px;
   background: #000000f2;
-  border: 4px solid var(--nes-yellow);
+  border: 4px solid var(--yellow);
   text-align: center;
   box-sizing: border-box;
 }
@@ -768,7 +795,7 @@ html:not(.debug-ui) #debug {
 }
 
 .calib-title {
-  color: var(--nes-yellow);
+  color: var(--yellow);
   font-size: 14px;
   margin-bottom: 16px;
   letter-spacing: 0.06em;
@@ -780,7 +807,7 @@ html:not(.debug-ui) #debug {
   text-align: left;
   font-size: 10px;
   line-height: 1.7;
-  color: var(--nes-white);
+  color: var(--white);
 }
 
 .calib-steps li {
@@ -797,7 +824,7 @@ html:not(.debug-ui) #debug {
 
 #calib-count {
   font-size: 10px;
-  color: var(--nes-yellow);
+  color: var(--yellow);
   letter-spacing: 0.04em;
 }
 
@@ -818,13 +845,13 @@ html:not(.debug-ui) #debug {
 }
 
 .calib-pip.on {
-  background: var(--nes-red);
+  background: var(--red);
   box-shadow: 0 0 8px 2px rgba(252, 116, 96, 0.6);
 }
 
 .calib-pip.done {
-  background: var(--nes-yellow);
-  border-color: var(--nes-yellow);
+  background: var(--yellow);
+  border-color: var(--yellow);
 }
 
 #calib-status {

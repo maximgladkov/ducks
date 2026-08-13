@@ -16,7 +16,7 @@
     "dev": "npm run dev:local",
     "dev:local": "npm run build -w shared && concurrently -k -n shared,sig,host,ctrl -c blue,magenta,green,cyan \"npm run dev -w shared\" \"npm run dev -w signalling\" \"npm run dev -w host\" \"npm run dev -w controller\"",
     "build": "npm run build -w shared && npm run build -w host && VITE_BASE=/c/ npm run build -w controller && npm run build -w signalling",
-    "test": "npm run test -w shared",
+    "test": "npm run test -w shared && npm run test -w @duckhunt/host",
     "start:signalling": "npm run start -w signalling",
     "start:prod": "SERVE_STATIC=1 npm run start -w signalling"
   },
