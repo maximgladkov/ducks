@@ -20,6 +20,7 @@ export type ControllerEventType =
   | "trigger_down"
   | "trigger_up"
   | "recentre"
+  | "recalibrate"
   | "calib_point";
 
 export type ControllerEvent = {

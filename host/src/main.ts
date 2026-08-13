@@ -1001,8 +1001,9 @@ function frame(now: number): void {
   frameTime = now - lastFrame;
   fps = fps * 0.9 + (1000 / Math.max(1, frameTime)) * 0.1;
   lastFrame = now;
+  const paused = calibratingPlayerId !== null;
 
-  updateSkyClouds(skyClouds, dt);
+  updateSkyClouds(skyClouds, paused ? 0 : dt);
 
   if (calibCapture) {
     const p = players.get(calibCapture.playerId);
@@ -1020,35 +1021,37 @@ function frame(now: number): void {
     }
   }
 
-  if (stationaryMode) {
-    const stepped = stepTargets(targets, screenSize(), dt);
-    targets = stepped.next;
-    const alive = targets.filter(
-      (t) => t.stationary && !t.falling && t.flash <= 0,
-    );
-    if (alive.length === 0) targets = spawnStationaryGrid(screenSize());
-  } else {
-    const huntMode = match.mode ?? "A";
-    const stepped = stepTargets(targets, screenSize(), dt, huntMode);
-    for (const left of stepped.escaped) {
-      if (left.escaping && !left.tag) recordMiss(match);
+  if (!paused) {
+    if (stationaryMode) {
+      const stepped = stepTargets(targets, screenSize(), dt);
+      targets = stepped.next;
+      const alive = targets.filter(
+        (t) => t.stationary && !t.falling && t.flash <= 0,
+      );
+      if (alive.length === 0) targets = spawnStationaryGrid(screenSize());
+    } else {
+      const huntMode = match.mode ?? "A";
+      const stepped = stepTargets(targets, screenSize(), dt, huntMode);
+      for (const left of stepped.escaped) {
+        if (left.escaping && !left.tag) recordMiss(match);
+      }
+      targets = stepped.next;
+      const cues = tickMatch(match, dt, duckCounts(targets));
+      if (cues.length) applyCues(cues);
+      else syncHud();
     }
-    targets = stepped.next;
-    const cues = tickMatch(match, dt, duckCounts(targets));
-    if (cues.length) applyCues(cues);
-    else syncHud();
-  }
 
-  floatScores = floatScores
-    .map((f) => ({ ...f, t: f.t + dt }))
-    .filter((f) => f.t < 0.9);
+    floatScores = floatScores
+      .map((f) => ({ ...f, t: f.t + dt }))
+      .filter((f) => f.t < 0.9);
+  }
 
   paintBanner();
 
   for (const p of players.values()) {
     updatePlayerFrame(p, settings, screenSize(), targets, dt, DEBUG_UI && debugOpen);
     if (p.needsRecal && !p.calibrating && calibratingPlayerId === null) {
-      setCalibResult("Aim drifted — recalibrate (DBG → Recalibrate)");
+      setCalibResult("Aim drifted — hold two fingers on the phone to recalibrate");
     }
   }
 
@@ -1083,6 +1086,16 @@ function addPlayer(playerId: string): void {
         finishLagFlash(performance.now());
         return;
       }
+      if (event.type === "recalibrate") {
+        if (calibratingPlayerId !== null || p.calibrating) return;
+        startCalibration(
+          p.id,
+          p.homography
+            ? { total: CALIB_REFRESH_COUNT, keepMapping: true }
+            : {},
+        );
+        return;
+      }
       if (p.calibrating) {
         handlePlayerEvent(
           p,
@@ -1095,6 +1108,8 @@ function addPlayer(playerId: string): void {
         if (event.type === "trigger_up") onCalibHoldEnd(p);
         return;
       }
+
+      if (calibratingPlayerId !== null) return;
 
       if (event.type !== "trigger_down") {
         handlePlayerEvent(

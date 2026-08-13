@@ -21,8 +21,8 @@ const params = new URLSearchParams(location.search);
 const pathSession = location.pathname.match(/\/c\/([a-z]{2,4})\/?$/i)?.[1]?.toLowerCase();
 const sessionId = pathSession ?? params.get("session");
 
-const IDLE_HINT = "Hold two fingers to recentre";
-const RECENTRE_HOLD_MS = 600;
+const IDLE_HINT = "Hold two fingers to recalibrate";
+const RECALIBRATE_HOLD_MS = 600;
 const USE_TOUCH = "ontouchstart" in window;
 
 let wakeLock: WakeLockSentinel | null = null;
@@ -31,7 +31,7 @@ let armed = false;
 let shotsRemaining = 3;
 let calibrating = false;
 let fireId: number | null = null;
-let recentreTimer: number | null = null;
+let recalibrateTimer: number | null = null;
 let baseHint = IDLE_HINT;
 let settleTimer = 0;
 const contacts = new ContactMap();
@@ -178,37 +178,32 @@ async function arm(): Promise<void> {
 }
 
 function sendEvent(
-  type: "trigger_down" | "trigger_up" | "recentre" | "calib_point",
+  type: "trigger_down" | "trigger_up" | "recalibrate" | "calib_point",
   seq = 0,
 ): void {
   session.sendEvent({ t: performance.now(), type, seq });
 }
 
-function recentre(): void {
-  motion.recentre();
-  sendEvent("recentre");
-  setStatus("Recentered");
-}
-
-function cancelRecentreHold(): void {
-  if (recentreTimer === null) return;
-  window.clearTimeout(recentreTimer);
-  recentreTimer = null;
+function cancelRecalibrateHold(): void {
+  if (recalibrateTimer === null) return;
+  window.clearTimeout(recalibrateTimer);
+  recalibrateTimer = null;
   hintEl.textContent = baseHint;
 }
 
-function maybeStartRecentre(fingerCount: number): void {
-  if (fingerCount < 2) {
-    cancelRecentreHold();
+function maybeStartRecalibrate(fingerCount: number): void {
+  if (calibrating || fingerCount < 2) {
+    cancelRecalibrateHold();
     return;
   }
-  if (recentreTimer !== null) return;
-  hintEl.textContent = "Keep holding to recentre…";
-  recentreTimer = window.setTimeout(() => {
-    recentreTimer = null;
+  if (recalibrateTimer !== null) return;
+  hintEl.textContent = "Keep holding to recalibrate…";
+  recalibrateTimer = window.setTimeout(() => {
+    recalibrateTimer = null;
     hintEl.textContent = baseHint;
-    recentre();
-  }, RECENTRE_HOLD_MS);
+    sendEvent("recalibrate");
+    setStatus("Recalibrating…");
+  }, RECALIBRATE_HOLD_MS);
 }
 
 function beginFire(): void {
@@ -236,6 +231,12 @@ function endFire(): void {
 
 function syncFingers(): void {
   const fingers = contacts.fingers();
+  if (fingers.length >= 2) {
+    if (fireId !== null) endFire();
+    maybeStartRecalibrate(fingers.length);
+    return;
+  }
+  cancelRecalibrateHold();
   if (fireId !== null) {
     const held = contacts.get(fireId);
     if (!held || held.kind === "palm") endFire();
@@ -244,7 +245,6 @@ function syncFingers(): void {
     fireId = fingers[0].id;
     beginFire();
   }
-  maybeStartRecentre(fingers.length);
 }
 
 function scheduleSync(wait: boolean): void {

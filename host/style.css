@@ -303,6 +303,23 @@ body {
   display: none;
 }
 
+#play-hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(23.333vh + 10px);
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: min(92vw, 720px);
+  padding: 0 12px;
+  font-size: clamp(7px, 1.15vw, 11px);
+  line-height: 1.5;
+  color: var(--yellow);
+  text-align: center;
+  letter-spacing: 0.08em;
+  text-shadow: 2px 2px 0 #000;
+  pointer-events: none;
+}
+
 html.debug-ui #toggle-debug {
   display: inline-block;
 }
@@ -313,6 +330,7 @@ html:not(.debug-ui) #debug {
 
 #app.calibrating #qr-panel,
 #app.calibrating #game-hud,
+#app.calibrating #play-hint,
 #app.calibrating #toggle-debug,
 #app.calibrating #crosshairs,
 #app.calibrating #calib-result {
