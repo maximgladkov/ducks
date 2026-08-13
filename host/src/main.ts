@@ -61,6 +61,11 @@ import {
 } from "./scene";
 import { diagLog, diagStart, roundAll } from "./diag";
 
+const DEBUG_UI =
+  import.meta.env.DEV ||
+  new URLSearchParams(location.search).get("debug") === "1";
+document.documentElement.classList.toggle("debug-ui", DEBUG_UI);
+
 let sprites: SpriteBank | null = null;
 let dogShow: { mode: "laugh" | "got"; t: number; playerId: string } | null =
   null;
@@ -68,13 +73,16 @@ const hud = createHudState();
 const skyClouds = createSkyClouds(8);
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
+const appEl = document.getElementById("app")!;
 const crossLayer = document.getElementById("crosshairs")!;
 const qrCanvas = document.getElementById("qr") as HTMLCanvasElement;
 const joinUrlEl = document.getElementById("join-url")!;
 const playersEl = document.getElementById("players")!;
 const calibOverlay = document.getElementById("calib-overlay")!;
 const calibSpotlight = document.getElementById("calib-spotlight")!;
-const calibDot = document.getElementById("calib-dot")!;
+const calibTarget = document.getElementById("calib-target")!;
+const calibCountdown = document.getElementById("calib-countdown")!;
+const calibHoldLabel = document.getElementById("calib-hold-label")!;
 const calibCard = document.getElementById("calib-card")!;
 const calibCount = document.getElementById("calib-count")!;
 const calibPips = document.getElementById("calib-pips")!;
@@ -118,6 +126,7 @@ let calibCapture: {
 } | null = null;
 const CALIB_SETTLE_MS = 150;
 const CALIB_STABLE_MS = 550;
+const CALIB_HOLD_MS = 3000;
 const CALIB_MIN_HOLD_MS = 400;
 const CALIB_RELEASE_TRIM_MS = 80;
 const CALIB_MIN_SAMPLES = 12;
@@ -129,6 +138,7 @@ const CALIB_MAX_ANGLE_SPREAD = 0.06;
 const CALIB_MAX_DRIFT_DEG_PER_SEC = 3;
 const SENSOR_SETTLE_TIMEOUT_MS = 10000;
 let lagFlashAt: number | null = null;
+let lastCalibHoldSec: number | null = null;
 
 function startLagFlash(): void {
   const el = document.getElementById("lag-flash");
@@ -167,7 +177,7 @@ function resize(): void {
   canvas.style.height = `${window.innerHeight}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   setCloudScreen(window.innerWidth, window.innerHeight);
-  if (calibratingPlayerId !== null && !calibDot.classList.contains("hidden")) {
+  if (calibratingPlayerId !== null && !calibTarget.classList.contains("hidden")) {
     showCalibCorner(calibSeq);
   }
 }
@@ -228,7 +238,7 @@ function renderPlayers(): void {
   playersEl.innerHTML = [...players.values()]
     .map(
       (p) =>
-        `<div style="color:${p.color}">● ${p.index + 1}P · ${p.transport} · ${p.shots}/${HUD_MAX_SHOTS} · ${String(p.score).padStart(6, "0")}</div>`,
+        `<div style="color:${p.color}">● ${p.index + 1}P${DEBUG_UI ? ` · ${p.transport}` : ""} · ${p.shots}/${HUD_MAX_SHOTS} · ${String(p.score).padStart(6, "0")}</div>`,
     )
     .join("");
 }
@@ -237,7 +247,12 @@ function setCalibStatus(text: string | null): void {
   calibStatus.textContent = text ?? "";
 }
 
-function setCalibResult(text: string | null): void {
+function setCalibResult(text: string | null, opts: { player?: boolean } = {}): void {
+  if (text && !DEBUG_UI && !opts.player) {
+    calibResult.classList.add("hidden");
+    calibResult.textContent = "";
+    return;
+  }
   if (!text) {
     calibResult.classList.add("hidden");
     calibResult.textContent = "";
@@ -247,10 +262,62 @@ function setCalibResult(text: string | null): void {
   calibResult.textContent = text;
 }
 
+function clearCalibPark(): void {
+  calibCard.classList.remove("park-tl", "park-tr", "park-bl", "park-br", "dodge");
+}
+
+function parkCalibCard(x: number, y: number): void {
+  clearCalibPark();
+  const col = x < window.innerWidth / 2 ? "r" : "l";
+  const row = y < window.innerHeight / 2 ? "b" : "t";
+  calibCard.classList.add(`park-${row}${col}`);
+}
+
+function resetCalibHoldUi(): void {
+  lastCalibHoldSec = null;
+  calibTarget.style.setProperty("--hold", "0%");
+  calibCountdown.textContent = "";
+  calibHoldLabel.textContent = "HOLD FIRE";
+}
+
+function paintCalibHold(now: number): void {
+  if (!calibCapture) {
+    resetCalibHoldUi();
+    return;
+  }
+  const held = now - calibCapture.startedAt;
+  const remain = Math.max(0, CALIB_HOLD_MS - held);
+  const progress = Math.max(0, Math.min(1, held / CALIB_HOLD_MS));
+  calibTarget.style.setProperty("--hold", `${Math.round(progress * 100)}%`);
+  const sec = remain > 0 ? Math.ceil(remain / 1000) : 0;
+  if (sec > 0) {
+    calibCountdown.textContent = String(sec);
+    calibHoldLabel.textContent = "KEEP HOLDING";
+    setCalibStatus("Keep holding FIRE still");
+  } else {
+    calibCountdown.textContent = "";
+    calibHoldLabel.textContent = "HOLD STILL";
+    setCalibStatus("Keep holding still until it locks");
+  }
+  if (sec !== lastCalibHoldSec) {
+    lastCalibHoldSec = sec;
+    const peer = peers.get(calibCapture.playerId);
+    peer?.send({
+      type: "status",
+      text:
+        sec > 0
+          ? `HOLD STILL — release in ${sec}`
+          : "HOLD STILL — locking…",
+    });
+  }
+}
+
 function showCalibOverlay(): void {
-  calibOverlay.classList.remove("hidden");
-  calibDot.classList.add("hidden");
-  calibCard.classList.remove("dodge");
+  appEl.classList.add("calibrating");
+  calibOverlay.classList.remove("hidden", "targeting");
+  calibTarget.classList.add("hidden");
+  clearCalibPark();
+  resetCalibHoldUi();
   calibCount.textContent = "";
   for (const pip of calibPips.children) {
     pip.classList.remove("on", "done");
@@ -258,8 +325,12 @@ function showCalibOverlay(): void {
 }
 
 function hideCalibOverlay(): void {
+  appEl.classList.remove("calibrating");
   calibOverlay.classList.add("hidden");
-  calibDot.classList.add("hidden");
+  calibOverlay.classList.remove("targeting");
+  calibTarget.classList.add("hidden");
+  clearCalibPark();
+  resetCalibHoldUi();
   setCalibStatus(null);
 }
 
@@ -271,34 +342,27 @@ function updateCalibPips(seq: number, total: number): void {
   });
 }
 
-function updateCalibDodge(x: number, y: number): void {
-  calibCard.classList.remove("dodge");
-  const rect = calibCard.getBoundingClientRect();
-  const pad = 80;
-  const inside =
-    x >= rect.left - pad &&
-    x <= rect.right + pad &&
-    y >= rect.top - pad &&
-    y <= rect.bottom + pad;
-  calibCard.classList.toggle("dodge", inside);
-}
-
 function showCalibCorner(seq: number): void {
   const p = calibratingPlayerId ? players.get(calibratingPlayerId) : undefined;
   const total = p?.calibTotal ?? CALIB_POINT_COUNT;
   const c = calibTargets(screenSize())[seq];
   if (!c) return;
   calibSeq = seq;
+  appEl.classList.add("calibrating");
   calibOverlay.classList.remove("hidden");
+  calibOverlay.classList.add("targeting");
   calibSpotlight.style.setProperty("--calib-x", `${c[0]}px`);
   calibSpotlight.style.setProperty("--calib-y", `${c[1]}px`);
-  calibDot.style.left = `${c[0]}px`;
-  calibDot.style.top = `${c[1]}px`;
-  calibDot.classList.remove("hidden");
+  calibTarget.style.left = `${c[0]}px`;
+  calibTarget.style.top = `${c[1]}px`;
+  calibTarget.dataset.v = c[1] < window.innerHeight / 2 ? "top" : "bottom";
+  calibTarget.dataset.h = c[0] < window.innerWidth / 2 ? "left" : "right";
+  calibTarget.classList.remove("hidden");
+  resetCalibHoldUi();
   calibCount.textContent = `TARGET ${seq + 1} / ${total}`;
   updateCalibPips(seq, total);
-  updateCalibDodge(c[0], c[1]);
-  setCalibStatus("Aim at the glowing dot, then hold FIRE still until it locks");
+  parkCalibCard(c[0], c[1]);
+  setCalibStatus("Point at the glowing dot, then hold FIRE");
 }
 
 function hideCalibCorner(): void {
@@ -408,7 +472,7 @@ function startCalibration(
   showCalibCorner(0);
   peer.send({
     type: "status",
-    text: `Keep that grip for all ${total} targets — hold FIRE on each until it locks`,
+    text: `Point at each glowing dot and hold FIRE until the countdown ends (${total} targets)`,
   });
   peer.send({
     type: "calib_prompt",
@@ -426,9 +490,8 @@ function startCalibCapture(p: PlayerRuntime): void {
     times: [],
     startedAt: performance.now(),
   };
-  setCalibStatus("Hold still until it locks…");
-  const peer = peers.get(p.id);
-  peer?.send({ type: "status", text: "Hold still until it locks" });
+  lastCalibHoldSec = null;
+  paintCalibHold(performance.now());
 }
 
 function calibHoldWindow(
@@ -470,6 +533,18 @@ function completeCalibCapture(
 ): boolean {
   const peer = peers.get(p.id);
   if (!peer || !calibCapture || calibCapture.playerId !== p.id) return false;
+  const heldMs = now - calibCapture.startedAt;
+  if (heldMs < CALIB_HOLD_MS) {
+    if (kind === "auto") return false;
+    calibCapture = null;
+    resetCalibHoldUi();
+    peer.send({
+      type: "status",
+      text: "Keep holding until the countdown ends",
+    });
+    setCalibStatus("Keep holding FIRE until the countdown ends");
+    return false;
+  }
   const held = calibHoldWindow(now, kind);
   const minMs = kind === "auto" ? CALIB_STABLE_MS * 0.9 : CALIB_MIN_HOLD_MS;
   if (
@@ -479,11 +554,12 @@ function completeCalibCapture(
   ) {
     if (kind === "auto") return false;
     calibCapture = null;
+    resetCalibHoldUi();
     peer.send({
       type: "status",
-      text: "Hold longer — keep FIRE down until the target locks",
+      text: "Hold longer — keep FIRE down until the countdown ends",
     });
-    setCalibStatus("Hold FIRE longer on this target, then release");
+    setCalibStatus("Keep holding FIRE until the countdown ends");
     return false;
   }
   const quats = held.quats;
@@ -492,12 +568,17 @@ function completeCalibCapture(
   if (angleSpread > CALIB_MAX_ANGLE_SPREAD) {
     if (kind === "auto") return false;
     calibCapture = null;
+    resetCalibHoldUi();
     peer.send({
       type: "status",
-      text: `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`,
+      text: DEBUG_UI
+        ? `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`
+        : "Too shaky — hold still and try again",
     });
     setCalibStatus(
-      `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`,
+      DEBUG_UI
+        ? `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`
+        : "Too shaky — hold still and try again",
     );
     return false;
   }
@@ -505,6 +586,7 @@ function completeCalibCapture(
   if (driftRate > CALIB_MAX_DRIFT_DEG_PER_SEC) {
     if (kind === "auto") return false;
     calibCapture = null;
+    resetCalibHoldUi();
     diagLog("calib_reject", {
       id: p.id,
       index: p.calibQuats.length,
@@ -513,10 +595,14 @@ function completeCalibCapture(
     });
     peer.send({
       type: "status",
-      text: `Sensors still settling (${driftRate.toFixed(1)}°/s) — hold steady and retry`,
+      text: DEBUG_UI
+        ? `Sensors still settling (${driftRate.toFixed(1)}°/s) — hold steady and retry`
+        : "Sensors still settling — hold steady and try again",
     });
     setCalibStatus(
-      `Sensors still settling (${driftRate.toFixed(1)}°/s drift) — hold steady and retry this target`,
+      DEBUG_UI
+        ? `Sensors still settling (${driftRate.toFixed(1)}°/s drift) — hold steady and retry this target`
+        : "Sensors still settling — hold steady and try again",
     );
     return false;
   }
@@ -574,13 +660,28 @@ function completeCalibCapture(
   const summary = result.ok
     ? `${quality} · ${result.gripLabel} · accuracy ±${result.errorPx.toFixed(0)}px`
     : result.reason;
-  peer.send({ type: "calib_done", ok: result.ok, reason: summary });
+  peer.send({
+    type: "calib_done",
+    ok: result.ok,
+    reason: DEBUG_UI
+      ? summary
+      : result.ok
+        ? "Calibration OK — aim and shoot"
+        : "Calibration failed — try again",
+  });
   peer.send({ type: "ammo", shots: p.shots });
-  setCalibResult(
-    result.ok
-      ? `Calibration ${quality} · grip: ${result.gripLabel} · held-out accuracy ±${result.errorPx.toFixed(0)}px`
-      : result.reason ?? "Calibration failed",
-  );
+  if (DEBUG_UI) {
+    setCalibResult(
+      result.ok
+        ? `Calibration ${quality} · grip: ${result.gripLabel} · held-out accuracy ±${result.errorPx.toFixed(0)}px`
+        : result.reason ?? "Calibration failed",
+    );
+  } else {
+    setCalibResult(
+      result.ok ? "Ready — aim and shoot" : "Calibration failed — try again",
+      { player: true },
+    );
+  }
   window.setTimeout(() => setCalibResult(null), 5000);
   return true;
 }
@@ -721,11 +822,13 @@ function buildDebugHud(): void {
   document.getElementById("lag-flash")!.onclick = () => startLagFlash();
 }
 
-toggleDebug.onclick = () => {
-  debugOpen = !debugOpen;
-  debugEl.classList.toggle("hidden", !debugOpen);
-  if (debugOpen) buildDebugHud();
-};
+toggleDebug.onclick = DEBUG_UI
+  ? () => {
+      debugOpen = !debugOpen;
+      debugEl.classList.toggle("hidden", !debugOpen);
+      if (debugOpen) buildDebugHud();
+    }
+  : null;
 
 function updateDebugStats(): void {
   const el = document.getElementById("dbg-stats");
@@ -803,16 +906,7 @@ function frame(now: number): void {
         calibCapture.times.push(now);
       }
       if (!completeCalibCapture(p, now, "auto") && calibCapture) {
-        const held = now - calibCapture.startedAt;
-        const progress = Math.max(
-          0,
-          Math.min(1, (held - CALIB_SETTLE_MS) / CALIB_STABLE_MS),
-        );
-        setCalibStatus(
-          progress >= 1
-            ? "Keep holding still — waiting for a steady window"
-            : `Hold still until it locks… ${Math.round(progress * 100)}%`,
-        );
+        paintCalibHold(now);
       }
     }
   }
@@ -827,7 +921,7 @@ function frame(now: number): void {
   );
 
   for (const p of players.values()) {
-    updatePlayerFrame(p, settings, screenSize(), targets, dt, debugOpen);
+    updatePlayerFrame(p, settings, screenSize(), targets, dt, DEBUG_UI && debugOpen);
     if (p.needsRecal && !p.calibrating && calibratingPlayerId === null) {
       setCalibResult("Aim drifted — recalibrate (DBG → Recalibrate)");
     }

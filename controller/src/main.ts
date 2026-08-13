@@ -58,7 +58,7 @@ const session = new ControllerSession(sendStub, {
     if (msg.type === "calib_prompt") {
       calibrating = true;
       setStatus(`Calibrate target ${msg.seq + 1}/${msg.total}`);
-      setHint(`Same grip for all ${msg.total} dots — aim at the dot, hold FIRE still until it locks`);
+      setHint(`Same grip for all ${msg.total} dots — aim at the glowing dot and hold FIRE until the countdown ends`);
       if (armed) triggerBtn.textContent = "HOLD";
     }
     if (msg.type === "calib_done") {
@@ -67,7 +67,14 @@ const session = new ControllerSession(sendStub, {
       setHint(IDLE_HINT);
       if (armed) triggerBtn.textContent = "FIRE";
     }
-    if (msg.type === "status") setStatus(msg.text);
+    if (msg.type === "status") {
+      setStatus(msg.text);
+      if (calibrating && armed) {
+        const count = msg.text.match(/release in (\d)/);
+        if (count) triggerBtn.textContent = `HOLD ${count[1]}`;
+        else if (/locking/.test(msg.text)) triggerBtn.textContent = "HOLDING";
+      }
+    }
     if (msg.type === "ammo") {
       shotsRemaining = Math.max(0, msg.shots);
     }

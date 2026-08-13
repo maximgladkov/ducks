@@ -289,6 +289,23 @@ body {
   left: 12px;
   bottom: calc(23.333vh + 12px);
   z-index: 21;
+  display: none;
+}
+
+html.debug-ui #toggle-debug {
+  display: inline-block;
+}
+
+html:not(.debug-ui) #debug {
+  display: none !important;
+}
+
+#app.calibrating #qr-panel,
+#app.calibrating #nes-hud,
+#app.calibrating #toggle-debug,
+#app.calibrating #crosshairs,
+#app.calibrating #calib-result {
+  visibility: hidden;
 }
 
 #nes-hud {
@@ -565,34 +582,78 @@ body {
 #calib-overlay {
   position: absolute;
   inset: 0;
-  z-index: 12;
+  z-index: 50;
   pointer-events: none;
 }
 
 #calib-spotlight {
   position: absolute;
   inset: 0;
-  background: radial-gradient(
-    circle 200px at var(--calib-x, 50%) var(--calib-y, 50%),
-    rgba(0, 0, 0, 0) 0%,
-    rgba(0, 0, 0, 0.25) 40%,
-    rgba(0, 0, 0, 0.78) 100%
+  z-index: 1;
+  background: rgba(0, 0, 0, 0.94);
+}
+
+#calib-overlay.targeting #calib-spotlight {
+  -webkit-mask-image: radial-gradient(
+    circle 92px at var(--calib-x, 50%) var(--calib-y, 50%),
+    transparent 0 34px,
+    #000 92px
+  );
+  mask-image: radial-gradient(
+    circle 92px at var(--calib-x, 50%) var(--calib-y, 50%),
+    transparent 0 34px,
+    #000 92px
+  );
+}
+
+#calib-target {
+  position: absolute;
+  z-index: 5;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+#calib-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 96px;
+  height: 96px;
+  margin: -48px 0 0 -48px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--nes-yellow) var(--hold, 0%),
+    rgba(252, 252, 252, 0.18) 0
+  );
+  -webkit-mask-image: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 8px),
+    #000 calc(100% - 7px)
+  );
+  mask-image: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 8px),
+    #000 calc(100% - 7px)
   );
 }
 
 #calib-dot {
   position: absolute;
-  width: 40px;
-  height: 40px;
-  margin: -20px 0 0 -20px;
+  left: 0;
+  top: 0;
+  width: 52px;
+  height: 52px;
+  margin: -26px 0 0 -26px;
   border-radius: 50%;
   background: var(--nes-red);
   border: 4px solid #fcfcfc;
   box-shadow:
     0 0 0 3px #000,
-    0 0 34px 14px rgba(252, 116, 96, 0.55);
+    0 0 42px 16px rgba(252, 116, 96, 0.7);
   pointer-events: none;
   animation: pulse 0.8s steps(2) infinite;
+  z-index: 1;
 }
 
 #calib-dot::after {
@@ -604,8 +665,56 @@ body {
   animation: calib-ring 1.2s ease-out infinite;
 }
 
+.calib-caption {
+  position: absolute;
+  left: 0;
+  width: max-content;
+  min-width: 160px;
+  text-align: center;
+  transform: translateX(-50%);
+  text-shadow: 3px 3px 0 #000;
+  z-index: 2;
+}
+
+#calib-target[data-v="top"] .calib-caption {
+  top: 58px;
+}
+
+#calib-target[data-v="bottom"] .calib-caption {
+  bottom: 58px;
+}
+
+#calib-target[data-h="left"] .calib-caption {
+  left: 58px;
+  transform: none;
+  text-align: left;
+}
+
+#calib-target[data-h="right"] .calib-caption {
+  left: auto;
+  right: 58px;
+  transform: none;
+  text-align: right;
+}
+
+#calib-countdown {
+  font-size: clamp(28px, 6vh, 52px);
+  line-height: 1;
+  color: var(--nes-yellow);
+  letter-spacing: 0.04em;
+}
+
+#calib-hold-label {
+  margin-top: 8px;
+  font-size: clamp(9px, 1.8vh, 14px);
+  line-height: 1.4;
+  color: var(--nes-white);
+  letter-spacing: 0.06em;
+}
+
 #calib-card {
   position: absolute;
+  z-index: 2;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
@@ -617,8 +726,45 @@ body {
   box-sizing: border-box;
 }
 
-#calib-card.dodge {
-  top: 74%;
+#calib-overlay.targeting #calib-card {
+  width: min(340px, 72vw);
+  padding: 14px 16px;
+}
+
+#calib-overlay.targeting .calib-steps {
+  display: none;
+}
+
+#calib-card.park-tl {
+  left: 24px;
+  top: 24px;
+  right: auto;
+  bottom: auto;
+  transform: none;
+}
+
+#calib-card.park-tr {
+  left: auto;
+  right: 24px;
+  top: 24px;
+  bottom: auto;
+  transform: none;
+}
+
+#calib-card.park-bl {
+  left: 24px;
+  top: auto;
+  right: auto;
+  bottom: 24px;
+  transform: none;
+}
+
+#calib-card.park-br {
+  left: auto;
+  right: 24px;
+  top: auto;
+  bottom: 24px;
+  transform: none;
 }
 
 .calib-title {

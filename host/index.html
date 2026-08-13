@@ -87,20 +87,27 @@
       </div>
       <div id="calib-overlay" class="hidden">
         <div id="calib-spotlight"></div>
-        <div id="calib-dot" class="hidden"></div>
         <div id="calib-card">
           <div class="calib-title">CALIBRATION</div>
           <ol class="calib-steps">
             <li>Hold the phone like a gun — keep that exact grip</li>
             <li>Point the phone at the glowing dot</li>
-            <li>Hold FIRE still until the target locks</li>
-            <li>Repeat for the four corners</li>
+            <li>Hold FIRE still until the countdown ends</li>
+            <li>Repeat for every glowing target</li>
           </ol>
           <div class="calib-progress">
             <span id="calib-count"></span>
             <div id="calib-pips"></div>
           </div>
           <div id="calib-status"></div>
+        </div>
+        <div id="calib-target" class="hidden">
+          <div id="calib-ring"></div>
+          <div id="calib-dot"></div>
+          <div class="calib-caption">
+            <div id="calib-countdown"></div>
+            <div id="calib-hold-label">HOLD FIRE</div>
+          </div>
         </div>
       </div>
       <div id="debug" class="hidden"></div>
