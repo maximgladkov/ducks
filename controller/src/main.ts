@@ -10,14 +10,18 @@ import {
 const statusEl = document.getElementById("status")!;
 const warnEl = document.getElementById("warn")!;
 const hintEl = document.getElementById("hint")!;
-const triggerBtn = document.getElementById("trigger") as HTMLButtonElement;
+const gripEl = document.getElementById("grip")!;
+const triggers = [
+  ...document.querySelectorAll<HTMLButtonElement>(".trigger"),
+];
 
 const params = new URLSearchParams(location.search);
 const pathSession = location.pathname.match(/\/c\/([a-z]{2,4})\/?$/i)?.[1]?.toLowerCase();
 const sessionId = pathSession ?? params.get("session");
 
-const IDLE_HINT = "Hold two fingers to recentre";
+const IDLE_HINT = "Thumb the red pad · two fingers on the grip to recentre";
 const RECENTRE_HOLD_MS = 600;
+const PALM_CONTACT_PX = 56;
 
 let wakeLock: WakeLockSentinel | null = null;
 let eventSeq = 0;
@@ -25,7 +29,9 @@ let armed = false;
 let shotsRemaining = 3;
 let calibrating = false;
 let lockedOrientation = screen.orientation?.type ?? "unknown";
-let activePointer: number | null = null;
+let firePointer: number | null = null;
+let fireEl: HTMLButtonElement | null = null;
+const gripPointers = new Set<number>();
 let recentreTimer: number | null = null;
 let baseHint = IDLE_HINT;
 
@@ -48,6 +54,15 @@ function setWarn(text: string | null): void {
   warnEl.textContent = text;
 }
 
+function setTriggerLabel(text: string): void {
+  for (const btn of triggers) btn.textContent = text;
+}
+
+function isPalmContact(ev: PointerEvent): boolean {
+  const size = Math.max(ev.width || 0, ev.height || 0);
+  return size >= PALM_CONTACT_PX;
+}
+
 if (!sessionId) {
   setStatus("Missing session — scan the host QR code");
 }
@@ -59,20 +74,20 @@ const session = new ControllerSession(sendStub, {
       calibrating = true;
       setStatus(`Calibrate target ${msg.seq + 1}/${msg.total}`);
       setHint(`Same grip for all ${msg.total} dots — aim at the glowing dot and hold FIRE until the countdown ends`);
-      if (armed) triggerBtn.textContent = "HOLD";
+      if (armed) setTriggerLabel("HOLD");
     }
     if (msg.type === "calib_done") {
       calibrating = false;
       setStatus(msg.ok ? "Calibration OK — aim and shoot" : msg.reason ?? "Calib failed");
       setHint(IDLE_HINT);
-      if (armed) triggerBtn.textContent = "FIRE";
+      if (armed) setTriggerLabel("FIRE");
     }
     if (msg.type === "status") {
       setStatus(msg.text);
       if (calibrating && armed) {
         const count = msg.text.match(/release in (\d)/);
-        if (count) triggerBtn.textContent = `HOLD ${count[1]}`;
-        else if (/locking/.test(msg.text)) triggerBtn.textContent = "HOLDING";
+        if (count) setTriggerLabel(`HOLD ${count[1]}`);
+        else if (/locking/.test(msg.text)) setTriggerLabel("HOLDING");
       }
     }
     if (msg.type === "ammo") {
@@ -131,9 +146,6 @@ const motion = new MotionPipeline({
   },
 });
 
-// Diagnostics still leave the phone for the host's debug HUD and session log; it
-// is only the readout on the phone that is gone, since the player cannot act on
-// gyro bias and the screen is meant to be glanced at, not read.
 window.setInterval(() => {
   if (!armed) return;
   session.sendDiag(motion.getDiagnostics());
@@ -161,8 +173,8 @@ async function arm(): Promise<void> {
   }
   armed = true;
   motion.start();
-  triggerBtn.dataset.state = "ready";
-  triggerBtn.textContent = calibrating ? "HOLD" : "FIRE";
+  for (const btn of triggers) btn.dataset.state = "ready";
+  setTriggerLabel(calibrating ? "HOLD" : "FIRE");
   setStatus(`Ready · ${motion.getMode()}`);
   setHint(IDLE_HINT);
   wakeLock = await requestWakeLock();
@@ -196,9 +208,19 @@ function cancelRecentreHold(): void {
   hintEl.textContent = baseHint;
 }
 
+function maybeStartRecentre(): void {
+  if (gripPointers.size < 2 || recentreTimer !== null) return;
+  hintEl.textContent = "Keep holding to recentre…";
+  recentreTimer = window.setTimeout(() => {
+    recentreTimer = null;
+    hintEl.textContent = baseHint;
+    recentre();
+  }, RECENTRE_HOLD_MS);
+}
+
 function fire(): void {
   if (calibrating) {
-    triggerBtn.textContent = "HOLDING";
+    setTriggerLabel("HOLDING");
     sendEvent("trigger_down", eventSeq++);
     return;
   }
@@ -211,56 +233,65 @@ function fire(): void {
   sendEvent("trigger_down", eventSeq++);
 }
 
-triggerBtn.addEventListener("click", () => {
-  if (!armed) void arm();
-});
+for (const btn of triggers) {
+  btn.addEventListener("click", () => {
+    if (!armed) void arm();
+  });
 
-triggerBtn.addEventListener("pointerdown", (ev) => {
-  // The arming tap must not also spend a shot, and it must reach the click that
-  // follows, which is the gesture the permission prompt hangs off — cancelling
-  // this event's default can swallow that click, so it is left alone until armed.
+  btn.addEventListener("pointerdown", (ev) => {
+    if (!armed) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (isPalmContact(ev)) return;
+    if (firePointer !== null) return;
+    firePointer = ev.pointerId;
+    fireEl = btn;
+    btn.dataset.down = "1";
+    btn.setPointerCapture(ev.pointerId);
+    fire();
+  });
+}
+
+function releaseFire(ev: PointerEvent): void {
+  if (ev.pointerId !== firePointer) return;
+  ev.preventDefault();
+  if (fireEl?.hasPointerCapture(ev.pointerId)) {
+    fireEl.releasePointerCapture(ev.pointerId);
+  }
+  fireEl?.removeAttribute("data-down");
+  firePointer = null;
+  fireEl = null;
+  sendEvent("trigger_up", eventSeq++);
+  if (armed) setTriggerLabel(calibrating ? "HOLD" : "FIRE");
+}
+
+gripEl.addEventListener("pointerdown", (ev) => {
+  if ((ev.target as Element | null)?.closest?.(".trigger")) return;
   if (!armed) return;
   ev.preventDefault();
-  // Recentring re-anchors where the phone thinks the screen is, so a stray one
-  // would undo the calibration's aim and it has to be impossible to reach by
-  // accident. Two fingers rules out a thumb on the trigger, and holding them
-  // rules out the brief overlap you get from mashing the button with both.
-  if (activePointer !== null) {
-    if (ev.pointerId !== activePointer && recentreTimer === null) {
-      hintEl.textContent = "Keep holding to recentre…";
-      recentreTimer = window.setTimeout(() => {
-        recentreTimer = null;
-        hintEl.textContent = baseHint;
-        recentre();
-      }, RECENTRE_HOLD_MS);
-    }
-    return;
-  }
-  activePointer = ev.pointerId;
-  // Aiming means swinging the phone while pressed, and a finger that slides off
-  // the button would otherwise read as a release mid-shot.
-  triggerBtn.setPointerCapture(ev.pointerId);
-  fire();
+  gripPointers.add(ev.pointerId);
+  gripEl.setPointerCapture(ev.pointerId);
+  maybeStartRecentre();
 });
 
-const releasePointer = (ev: PointerEvent) => {
-  cancelRecentreHold();
-  if (ev.pointerId !== activePointer) return;
-  ev.preventDefault();
-  activePointer = null;
-  if (triggerBtn.hasPointerCapture(ev.pointerId)) {
-    triggerBtn.releasePointerCapture(ev.pointerId);
+const releaseGrip = (ev: PointerEvent) => {
+  if (!gripPointers.has(ev.pointerId)) return;
+  gripPointers.delete(ev.pointerId);
+  if (gripEl.hasPointerCapture(ev.pointerId)) {
+    gripEl.releasePointerCapture(ev.pointerId);
   }
-  sendEvent("trigger_up", eventSeq++);
-  if (armed) triggerBtn.textContent = calibrating ? "HOLD" : "FIRE";
+  if (gripPointers.size < 2) cancelRecentreHold();
 };
 
-triggerBtn.addEventListener("pointerup", releasePointer);
-triggerBtn.addEventListener("pointercancel", releasePointer);
+document.addEventListener("pointerup", (ev) => {
+  releaseFire(ev);
+  releaseGrip(ev);
+});
+document.addEventListener("pointercancel", (ev) => {
+  releaseFire(ev);
+  releaseGrip(ev);
+});
 
-// Long presses, double taps and stray pinches are all normal ways to hold a phone
-// while aiming, and every one of them has a browser default that would put a
-// selection, a magnifier or a zoom over the trigger.
 const swallow = (ev: Event) => ev.preventDefault();
 for (const type of [
   "touchmove",
@@ -275,8 +306,6 @@ for (const type of [
   document.addEventListener(type, swallow, { passive: false });
 }
 
-// Screen rotation is compensated for in the sample stream, so calibration stays
-// valid; it is only worth mentioning when the platform will not tell us the angle.
 window.addEventListener("orientationchange", () => {
   const next = screen.orientation?.type ?? "unknown";
   if (next === lockedOrientation) return;

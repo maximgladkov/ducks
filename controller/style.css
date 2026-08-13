@@ -1,6 +1,7 @@
 :root {
   --sky: #5c94fc;
   --grass: #00a800;
+  --dirt: #503000;
   --nes-black: #000;
   --nes-white: #fcfcfc;
   --nes-yellow: #fcb400;
@@ -30,12 +31,10 @@ body {
 }
 
 #app {
-  min-height: 100%;
-  padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  align-items: stretch;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
   background: linear-gradient(
     to bottom,
     rgba(0, 0, 0, 0.15),
@@ -43,13 +42,23 @@ body {
   );
 }
 
-.brand {
+#hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 8px;
   text-align: center;
-  font-size: 14px;
+  pointer-events: none;
+}
+
+.brand {
+  font-size: 12px;
   color: var(--nes-yellow);
   letter-spacing: 0.08em;
   text-shadow: 3px 3px 0 #000;
-  margin-top: 4px;
+  margin-bottom: 8px;
 }
 
 #status,
@@ -59,7 +68,7 @@ body {
 }
 
 #status {
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1.6;
   color: var(--nes-white);
   text-shadow: 2px 2px 0 #000;
@@ -69,6 +78,7 @@ body {
   color: var(--muted);
   font-size: 7px;
   line-height: 1.7;
+  margin-top: 8px;
 }
 
 #warn {
@@ -76,25 +86,41 @@ body {
   font-size: 8px;
   line-height: 1.5;
   padding: 10px;
+  margin: 8px auto 0;
+  max-width: 90%;
   border: 3px solid var(--nes-yellow);
   background: #000;
 }
 
-/*
- * A thumb resting on a button for a whole round is exactly the gesture phones
- * treat as "select this text" or "share this image", so everything that could
- * interrupt a shot is refused here rather than only at the document level.
- */
-#trigger {
-  flex: 1;
-  min-height: 46vh;
+#grip {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  touch-action: none;
+}
+
+.palm-zone {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 22%;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.35), transparent);
+}
+
+.trigger {
+  position: absolute;
+  top: 38%;
+  width: min(42vw, 168px);
+  height: min(42vw, 168px);
   border: 4px solid #000;
-  border-radius: 0;
-  padding: 14px 12px;
+  border-radius: 50%;
+  padding: 8px;
   font-family: inherit;
   font-weight: 400;
-  font-size: 26px;
-  letter-spacing: 0.12em;
+  font-size: 18px;
+  letter-spacing: 0.08em;
   color: var(--nes-white);
   text-shadow: 2px 2px 0 #000;
   background: var(--nes-red);
@@ -110,16 +136,40 @@ body {
   -webkit-user-drag: none;
 }
 
-#trigger:active {
+#trigger-left {
+  left: max(10px, env(safe-area-inset-left));
+}
+
+#trigger-right {
+  right: max(10px, env(safe-area-inset-right));
+}
+
+.trigger:active,
+.trigger[data-down="1"] {
   box-shadow: inset 6px 6px 0 #880000, inset -6px -6px 0 #fc7460;
   transform: translateY(2px);
 }
 
-/* Before motion access is granted the button is a start button, not a trigger. */
-#trigger[data-state="idle"] {
-  font-size: 15px;
+.trigger[data-state="idle"] {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
   background: var(--nes-blue);
   box-shadow: inset -6px -6px 0 #003888, inset 6px 6px 0 #3cbcfc;
+}
+
+@media (orientation: landscape) {
+  .trigger {
+    top: auto;
+    bottom: max(18px, env(safe-area-inset-bottom));
+    width: min(28vh, 150px);
+    height: min(28vh, 150px);
+    font-size: 16px;
+  }
+
+  .palm-zone {
+    height: 0;
+  }
 }
 
 .hidden {
