@@ -1,8 +1,12 @@
 import {
+  AimBench,
+  AngularRateEstimator,
   DEFAULT_AIM_BASIS,
   DEFAULT_DEBUG_SETTINGS,
   MUZZLE_CANDIDATES,
   OneEuroFilter2D,
+  SAMPLE_HISTORY,
+  StillLock,
   aimAssistPull,
   anglesDegToPlane,
   applyHomography,
@@ -16,12 +20,14 @@ import {
   hitscan,
   learnAimOffset,
   solveHomography,
+  solveAffine,
   homographyJacobian,
   hostTimeFromController,
   lerp,
   orientationToPlane,
   planeToAnglesDeg,
   predictOrientationSafe,
+  predictionHorizonSec,
   quatConjugate,
   quatIdentity,
   quatMultiply,
@@ -29,6 +35,8 @@ import {
   quatSlerp,
   referenceFrameForRecentre,
   sampleAgeMs,
+  sampleAtTime,
+  smoothSampleAgeMs,
   type AimBasis,
   type ControllerEvent,
   type ControllerSample,
@@ -37,6 +45,7 @@ import {
   type Quat,
   type TransportKind,
   type Vec2,
+  type Vec3,
 } from "@duckhunt/shared";
 import { HUD_MAX_SHOTS } from "./hud";
 import { diagEvery, diagLog, round, roundAll } from "./diag";
@@ -69,6 +78,7 @@ export type PlayerRuntime = {
   dropped: number;
   lastSample: ControllerSample | null;
   prevSample: ControllerSample | null;
+  samples: ControllerSample[];
   lastHostReceive: number;
   refInverse: Quat;
   homography: Mat3 | null;
@@ -76,6 +86,9 @@ export type PlayerRuntime = {
   relativePos: Vec2;
   prevQ: Quat | null;
   filter: OneEuroFilter2D;
+  rateFit: AngularRateEstimator;
+  stillLock: StillLock;
+  bench: AimBench;
   raw: Vec2;
   filtered: Vec2;
   predicted: Vec2;
@@ -83,6 +96,8 @@ export type PlayerRuntime = {
   clamped: boolean;
   edge: Vec2;
   sampleAge: number;
+  horizonMs: number;
+  rateQuality: number;
   missFlash: number;
   score: number;
   shots: number;
@@ -90,6 +105,8 @@ export type PlayerRuntime = {
   awaitingDog: boolean;
   calibRays: Vec2[];
   calibQuats: Quat[];
+  calibTotal: number;
+  calibFallback: { H: Mat3; basis: AimBasis; label: string } | null;
   calibrating: boolean;
   hasRecentered: boolean;
   sensorReady: boolean;
@@ -99,6 +116,8 @@ export type PlayerRuntime = {
   /** Shots that have contributed to `aimBias`. */
   biasShots: number;
   lastAimPlane: Vec2 | null;
+  missOffsets: Vec2[];
+  needsRecal: boolean;
   gripLabel: string;
   el: HTMLDivElement;
   wedge: HTMLDivElement;
@@ -109,7 +128,7 @@ export type PlayerRuntime = {
 
 // Bumped from v4: filter parameters moved from pixels to degrees of aim angle,
 // so previously stored values mean something entirely different now.
-const SETTINGS_KEY = "duckhunt.debug.v7";
+const SETTINGS_KEY = "duckhunt.debug.v8";
 
 export function loadSettings(): DebugSettings {
   try {
@@ -170,6 +189,7 @@ export function createPlayer(
     dropped: 0,
     lastSample: null,
     prevSample: null,
+    samples: [],
     lastHostReceive: 0,
     refInverse: quatIdentity(),
     homography: null,
@@ -180,6 +200,9 @@ export function createPlayer(
       minCutoff: settings.minCutoff,
       beta: settings.beta,
     }),
+    rateFit: new AngularRateEstimator(),
+    stillLock: new StillLock(),
+    bench: new AimBench(),
     raw: [w / 2, h / 2],
     filtered: [w / 2, h / 2],
     predicted: [w / 2, h / 2],
@@ -187,6 +210,8 @@ export function createPlayer(
     clamped: false,
     edge: [0, 0],
     sampleAge: 0,
+    horizonMs: 0,
+    rateQuality: 1,
     missFlash: 0,
     score: 0,
     shots: HUD_MAX_SHOTS,
@@ -194,6 +219,8 @@ export function createPlayer(
     awaitingDog: false,
     calibRays: [],
     calibQuats: [],
+    calibTotal: CALIB_POINT_COUNT,
+    calibFallback: null,
     calibrating: false,
     hasRecentered: false,
     sensorReady: false,
@@ -201,6 +228,8 @@ export function createPlayer(
     aimBias: [0, 0],
     biasShots: 0,
     lastAimPlane: null,
+    missOffsets: [],
+    needsRecal: false,
     gripLabel: DEFAULT_AIM_BASIS.label,
     el,
     wedge,
@@ -266,6 +295,9 @@ export function ingestSample(p: PlayerRuntime, sample: ControllerSample, setting
   }
   p.prevSample = p.lastSample;
   p.lastSample = sample;
+  p.samples.push(sample);
+  while (p.samples.length > SAMPLE_HISTORY) p.samples.shift();
+  p.rateFit.update(sample.q, sample.t / 1000);
   p.lastHostReceive = performance.now();
   p.packets += 1;
 }
@@ -290,6 +322,8 @@ export function handlePlayerEvent(
       p.relativePos = [screen[0] / 2, screen[1] / 2];
     }
     p.filter.reset();
+    p.stillLock.reset();
+    p.rateFit.reset();
     return { hitId: null, miss: false };
   }
 
@@ -303,8 +337,9 @@ export function handlePlayerEvent(
       onCalibPoint(p, p.calibRays.length);
       return { hitId: null, miss: false };
     }
+    const fired = aimAtEventTime(p, event.t, settings, screen, targets);
     const hitId = hitscan(
-      p.aim,
+      fired,
       targets.map((t) => ({
         id: t.id,
         x: t.x,
@@ -313,7 +348,18 @@ export function handlePlayerEvent(
       })),
       settings.aimAssistEnabled ? 10 : 4,
     );
+    const frameDelta = Math.hypot(fired[0] - p.aim[0], fired[1] - p.aim[1]);
+    diagLog("trigger", {
+      id: p.id,
+      eventT: event.t,
+      aimPx: roundAll(fired, 1),
+      frameAimPx: roundAll(p.aim, 1),
+      deltaPx: round(frameDelta, 1),
+      sampleAgeMs: round(p.sampleAge, 1),
+      horizonMs: round(p.horizonMs, 1),
+    });
     learnAimBias(p, targets, settings, screen);
+    noteShotOutcome(p, fired, targets, hitId, screen, settings);
     if (hitId) {
       return { hitId, miss: false };
     }
@@ -324,51 +370,157 @@ export function handlePlayerEvent(
   return { hitId: null, miss: false };
 }
 
-/**
- * Resolves the orientation to show this frame.
- *
- * Samples arrive at their own rate, so the two most recent are interpolated with
- * slerp to the current display time. Extrapolating past the newest sample is
- * left to the gyroscope-driven prediction step, which knows the actual angular
- * velocity, rather than to the interpolator.
- */
+function aimAtEventTime(
+  p: PlayerRuntime,
+  controllerT: number,
+  settings: DebugSettings,
+  screen: Vec2,
+  targets: Target[],
+): Vec2 {
+  const at = sampleAtTime(p.samples, controllerT);
+  if (!at) return p.aim;
+  const hostNow = performance.now();
+  const age = sampleAgeMs(at.t, p.clockOffset, hostNow);
+  const quality = at.nq;
+  const horizon = settings.predictionEnabled
+    ? predictionHorizonSec({
+        sampleAgeMs: age,
+        displayLagMs: settings.displayLagMs,
+        extraMs: settings.predictionHorizonMs,
+        quality,
+      })
+    : 0;
+  const predicted = predictOrientationSafe(at.q, at.w, horizon);
+  const q = applyReferenceFrame(predicted, p.refInverse);
+  if (!settings.absoluteAiming) return p.aim;
+  const plane = orientationToPlane(q, p.aimBasis);
+  if (!plane) return p.aim;
+  let aim = planeToScreen(plane, p, screen, settings);
+  if (settings.aimAssistEnabled) {
+    aim = aimAssistPull(
+      aim,
+      targets.map((t) => ({ x: t.x, y: t.y, radius: t.radius })),
+      settings.aimAssistRadius,
+    );
+  }
+  const clamped = clampAim(aim[0], aim[1], screen[0], screen[1]);
+  return [clamped.x, clamped.y];
+}
+
+function noteShotOutcome(
+  p: PlayerRuntime,
+  aim: Vec2,
+  targets: Target[],
+  hitId: string | null,
+  screen: Vec2,
+  settings: DebugSettings,
+): void {
+  if (hitId) {
+    p.missOffsets = [];
+    p.needsRecal = false;
+    return;
+  }
+  let nearest: Target | null = null;
+  let nearestD = Infinity;
+  for (const t of targets) {
+    const d = Math.hypot(aim[0] - t.x, aim[1] - t.y);
+    if (d < nearestD) {
+      nearestD = d;
+      nearest = t;
+    }
+  }
+  if (!nearest) return;
+  const offset: Vec2 = [nearest.x - aim[0], nearest.y - aim[1]];
+  p.missOffsets.push(offset);
+  while (p.missOffsets.length > 4) p.missOffsets.shift();
+  if (p.missOffsets.length < 3) return;
+  const mean: Vec2 = [
+    p.missOffsets.reduce((s, o) => s + o[0], 0) / p.missOffsets.length,
+    p.missOffsets.reduce((s, o) => s + o[1], 0) / p.missOffsets.length,
+  ];
+  const meanLen = Math.hypot(mean[0], mean[1]);
+  if (meanLen < 24) return;
+  let aligned = 0;
+  for (const o of p.missOffsets) {
+    const dot = (o[0] * mean[0] + o[1] * mean[1]) / (Math.hypot(o[0], o[1]) * meanLen);
+    if (dot > 0.7) aligned += 1;
+  }
+  if (aligned < p.missOffsets.length) return;
+  if (meanLen > Math.min(screen[0], screen[1]) * 0.18) {
+    p.needsRecal = true;
+    return;
+  }
+  if (!p.homography || !p.lastAimPlane || !settings.driftLearningEnabled) return;
+  const seen: Vec2 = [
+    settings.invertX ? screen[0] - aim[0] : aim[0],
+    settings.invertY ? screen[1] - aim[1] : aim[1],
+  ];
+  const next = learnAimOffset(
+    p.aimBias,
+    seen,
+    [
+      {
+        x: settings.invertX ? screen[0] - nearest.x : nearest.x,
+        y: settings.invertY ? screen[1] - nearest.y : nearest.y,
+        radius: nearest.radius,
+      },
+    ],
+    homographyJacobian(p.homography, p.lastAimPlane),
+    { radiusPx: 280, gain: 0.2 },
+  );
+  if (next) {
+    p.aimBias = next;
+    p.biasShots += 1;
+  }
+}
+
 function orientationForNow(
   p: PlayerRuntime,
   settings: DebugSettings,
-  predictMs: number,
 ): { base: Quat; predicted: Quat } | null {
   const sample = p.lastSample;
   if (!sample) return null;
 
   const hostNow = performance.now();
-  p.sampleAge = sampleAgeMs(sample.t, p.clockOffset, hostNow);
+  const rawAge = sampleAgeMs(sample.t, p.clockOffset, hostNow);
+  p.sampleAge = smoothSampleAgeMs(p.sampleAge, rawAge);
+  p.rateQuality = sample.nq ?? p.rateFit.quality();
 
-  let q = sample.q;
-  let w = sample.w;
+  let q = p.rateFit.poseAt(0) ?? sample.q;
+  let w = p.rateFit.rate();
   if (p.prevSample) {
     const span = Math.max(1, sample.t - p.prevSample.t);
     const alpha = Math.min(
       1,
       Math.max(0, (hostNow - hostTimeFromController(p.prevSample.t, p.clockOffset)) / span),
     );
-    q = quatSlerp(p.prevSample.q, sample.q, alpha);
-    w = [
-      lerp(p.prevSample.w[0], sample.w[0], alpha),
-      lerp(p.prevSample.w[1], sample.w[1], alpha),
-      lerp(p.prevSample.w[2], sample.w[2], alpha),
-    ];
+    if (alpha < 1) {
+      q = quatSlerp(p.prevSample.q, q, alpha);
+      w = [
+        lerp(p.prevSample.w[0], w[0], alpha),
+        lerp(p.prevSample.w[1], w[1], alpha),
+        lerp(p.prevSample.w[2], w[2], alpha),
+      ];
+    }
   }
 
   const base = applyReferenceFrame(q, p.refInverse);
-  if (!settings.predictionEnabled) return { base, predicted: base };
+  if (!settings.predictionEnabled) {
+    p.horizonMs = 0;
+    return { base, predicted: base };
+  }
 
-  const horizon = (Math.max(0, p.sampleAge) + predictMs) / 1000;
+  const horizon = predictionHorizonSec({
+    sampleAgeMs: p.sampleAge,
+    displayLagMs: settings.displayLagMs,
+    extraMs: settings.predictionHorizonMs,
+    quality: p.rateQuality,
+  });
+  p.horizonMs = horizon * 1000;
+  const predictedQ = p.rateFit.poseAt(horizon) ?? predictOrientationSafe(q, w, horizon);
   return {
     base,
-    predicted: applyReferenceFrame(
-      predictOrientationSafe(q, w, horizon),
-      p.refInverse,
-    ),
+    predicted: applyReferenceFrame(predictedQ, p.refInverse),
   };
 }
 
@@ -409,11 +561,7 @@ export function updatePlayerFrame(
 ): void {
   p.filter.setParams({ minCutoff: settings.minCutoff, beta: settings.beta });
 
-  const oriented = orientationForNow(
-    p,
-    settings,
-    settings.predictionHorizonMs + 1000 / 60,
-  );
+  const oriented = orientationForNow(p, settings);
   if (!oriented) return;
   p.prevQ = oriented.base;
 
@@ -554,6 +702,8 @@ function logAimFrame(
     filteredPx: roundAll(p.filtered, 1),
     predictedPx: roundAll(p.predicted, 1),
     pxPerDeg: roundAll(pixelsPerDegree(p.homography, rawPlane, screen), 2),
+    horizonMs: round(p.horizonMs, 1),
+    rateQuality: round(p.rateQuality, 3),
   });
 }
 
@@ -627,10 +777,45 @@ function finishFrame(
     );
   }
 
+  const rate = Math.hypot(
+    p.lastSample?.w[0] ?? 0,
+    p.lastSample?.w[1] ?? 0,
+    p.lastSample?.w[2] ?? 0,
+  );
+  if (settings.stillLockEnabled) {
+    aim = p.stillLock.update(aim, rate, dt);
+  } else {
+    p.stillLock.reset();
+  }
+
   const clamped = clampAim(aim[0], aim[1], screen[0], screen[1]);
   p.aim = [clamped.x, clamped.y];
   p.clamped = clamped.clamped;
   p.edge = [clamped.nx, clamped.ny];
+
+  const yaw = p.lastAimPlane ? planeToAnglesDeg(p.lastAimPlane)[0] : undefined;
+  p.bench.observe({
+    aim: p.aim,
+    tSec: performance.now() / 1000,
+    rateRad: rate,
+    sampleAgeMs: p.sampleAge,
+    horizonMs: p.horizonMs,
+    yawDeg: yaw,
+  });
+  if (diagEvery(`bench:${p.id}`, 500)) {
+    const snap = p.bench.snapshot();
+    diagLog("bench", {
+      id: p.id,
+      staticRmsPx: snap.staticRmsPx != null ? round(snap.staticRmsPx, 2) : null,
+      movingResidualPx:
+        snap.movingResidualPx != null ? round(snap.movingResidualPx, 2) : null,
+      yawDriftDegPerMin:
+        snap.yawDriftDegPerMin != null ? round(snap.yawDriftDegPerMin, 3) : null,
+      sampleAgeMs: round(snap.sampleAgeMs, 1),
+      horizonMs: round(snap.horizonMs, 1),
+      stillLock: p.stillLock.locked(),
+    });
+  }
 
   if (p.missFlash > 0) {
     p.missFlash = Math.max(0, p.missFlash - dt * 4);
@@ -670,20 +855,32 @@ function finishFrame(
   p.ghostPred.style.transform = `translate3d(${p.predicted[0]}px, ${p.predicted[1]}px, 0)`;
 }
 
-export function beginCalibration(p: PlayerRuntime): void {
+export function beginCalibration(
+  p: PlayerRuntime,
+  opts: { total?: number; keepMapping?: boolean } = {},
+): void {
   p.calibrating = true;
   p.calibRays = [];
   p.calibQuats = [];
-  p.homography = null;
-  p.aimBias = [0, 0];
-  p.biasShots = 0;
-  p.aimBasis = { ...DEFAULT_AIM_BASIS };
-  p.gripLabel = "detecting…";
+  p.calibTotal = opts.total ?? CALIB_POINT_COUNT;
+  p.calibFallback =
+    opts.keepMapping && p.homography
+      ? { H: p.homography, basis: { ...p.aimBasis }, label: p.gripLabel }
+      : null;
+  if (!opts.keepMapping) {
+    p.homography = null;
+    p.aimBias = [0, 0];
+    p.biasShots = 0;
+    p.aimBasis = { ...DEFAULT_AIM_BASIS };
+    p.gripLabel = "detecting…";
+  }
+  p.needsRecal = false;
   if (p.lastSample) {
     p.refInverse = referenceFrameForRecentre(p.lastSample.q);
     p.hasRecentered = true;
   }
   p.filter.reset();
+  p.stillLock.reset();
 }
 
 export function samplePlane(p: PlayerRuntime): Vec2 | null {
@@ -764,7 +961,7 @@ export function recordCalibCorner(
 }
 
 /** Captures needed before the remaining targets can be aimed at with feedback. */
-const CALIB_PREVIEW_POINTS = 4;
+const CALIB_PREVIEW_POINTS = 3;
 
 /**
  * Switches aiming onto a mapping fitted from the captures so far, so the player
@@ -788,7 +985,11 @@ function refreshProvisionalAim(p: PlayerRuntime, screen: Vec2): void {
     if (!plane) return;
     planes.push(plane);
   }
-  const H = solveHomography(planes, targets.slice(0, planes.length));
+  const H =
+    planes.length >= 4
+      ? solveHomography(planes, targets.slice(0, planes.length)) ??
+        solveAffine(planes, targets.slice(0, planes.length))
+      : solveAffine(planes, targets.slice(0, planes.length));
   if (!H) return;
 
   if (p.calibQuats.length === CALIB_PREVIEW_POINTS) p.filter.reset();
@@ -800,7 +1001,9 @@ function refreshProvisionalAim(p: PlayerRuntime, screen: Vec2): void {
   p.biasShots = 0;
 }
 
-export const CALIB_POINT_COUNT = 9;
+export const CALIB_POINT_COUNT = 4;
+export const CALIB_FULL_COUNT = 9;
+export const CALIB_REFRESH_COUNT = 4;
 
 /** Held-out error below which a fit is treated as properly calibrated. */
 const CALIB_GOOD_ERROR_FRACTION = 0.035;
@@ -816,6 +1019,23 @@ export function calibTargets(screen: Vec2): Vec2[] {
   return calibrationPoints(screen[0], screen[1]);
 }
 
+function calibReferencePose(quats: Quat[], targets: Vec2[], screen: Vec2): Quat {
+  const cx = screen[0] / 2;
+  const cy = screen[1] / 2;
+  const near = Math.min(screen[0], screen[1]) * 0.12;
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < targets.length; i++) {
+    const d = Math.hypot(targets[i]![0] - cx, targets[i]![1] - cy);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  if (bestD <= near && quats[best]) return quats[best]!;
+  return averageQuats(quats) ?? quats[0]!;
+}
+
 export function finishCalibration(
   p: PlayerRuntime,
   screen: Vec2,
@@ -826,28 +1046,32 @@ export function finishCalibration(
   rough?: boolean;
   /** Leave-one-out aim error in pixels. */
   errorPx: number;
+  meanError?: number;
   worstIndex: number;
   gripLabel?: string;
   /** Which mapping won on held-out error. */
   model?: string;
 } {
   const targets = calibTargets(screen);
-  if (p.calibQuats.length < CALIB_POINT_COUNT) {
+  const used = targets.slice(0, p.calibQuats.length);
+  const needed = p.calibTotal;
+  const previous = p.calibFallback;
+  if (p.calibQuats.length < needed) {
     return {
       ok: false,
-      reason: `Need ${CALIB_POINT_COUNT} points`,
+      reason: `Need ${needed} points`,
       errorPx: Infinity,
       worstIndex: p.calibQuats.length,
     };
   }
-
-  const used = targets.slice(0, p.calibQuats.length);
   // The centre target is captured last, and referencing every capture to that
   // pose puts the screen centre at plane (0,0). Plane coordinates then stay
   // small and symmetric instead of running out towards the 90-degree
   // singularity, and a later recentre lands the crosshair mid-screen, which is
   // what the homography already maps plane (0,0) to.
-  const reference = referenceFrameForRecentre(p.calibQuats[p.calibQuats.length - 1]!);
+  const reference = referenceFrameForRecentre(
+    calibReferencePose(p.calibQuats, used, screen),
+  );
   const recentred = p.calibQuats.map((q) => applyReferenceFrame(q, reference));
 
   const fit = detectAimBasis(recentred, used);
@@ -855,6 +1079,11 @@ export function finishCalibration(
     logCalibrationReport(p, recentred, screen, false);
     p.calibRays = [];
     p.calibQuats = [];
+    if (previous) {
+      p.homography = previous.H;
+      p.aimBasis = previous.basis;
+      p.gripLabel = previous.label;
+    }
     return {
       ok: false,
       reason: "Could not fit a mapping — hold one consistent grip and redo",
@@ -869,8 +1098,14 @@ export function finishCalibration(
     p.aimBasis = fit.basis;
     p.homography = fit.H;
     logCalibrationReport(p, recentred, screen, false);
-    p.homography = null;
-    p.aimBasis = { ...DEFAULT_AIM_BASIS };
+    if (previous) {
+      p.homography = previous.H;
+      p.aimBasis = previous.basis;
+      p.gripLabel = previous.label;
+    } else {
+      p.homography = null;
+      p.aimBasis = { ...DEFAULT_AIM_BASIS };
+    }
     p.calibRays = [];
     p.calibQuats = [];
     return {
@@ -890,16 +1125,42 @@ export function finishCalibration(
   p.aimBias = [0, 0];
   p.biasShots = 0;
   p.calibrating = false;
+  p.needsRecal = false;
   p.filter.reset();
+  p.stillLock.reset();
   logCalibrationReport(p, recentred, screen, true);
   return {
     ok: true,
     rough,
     errorPx: fit.maxError,
+    meanError: fit.meanError,
     worstIndex,
     gripLabel: fit.basis.label,
     model: fit.model,
   };
+}
+
+export function applyStoredCalibration(
+  p: PlayerRuntime,
+  stored: {
+    H: Mat3;
+    muzzle: Vec3;
+    label: string;
+  },
+): void {
+  p.aimBasis = { muzzle: stored.muzzle, label: stored.label };
+  p.gripLabel = stored.label;
+  p.homography = stored.H;
+  p.aimBias = [0, 0];
+  p.biasShots = 0;
+  p.needsRecal = false;
+  p.calibrating = false;
+  if (p.lastSample) {
+    p.refInverse = referenceFrameForRecentre(p.lastSample.q);
+    p.hasRecentered = true;
+  }
+  p.filter.reset();
+  p.stillLock.reset();
 }
 
 function worstCalibPoint(

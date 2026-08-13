@@ -13,6 +13,7 @@ export type ControllerSample = {
   t: number;
   q: Quat;
   w: Vec3;
+  nq?: number;
 };
 
 export type ControllerEventType =
@@ -40,6 +41,10 @@ export type ControllerDiagnostics = {
   tiltResidualDeg: number;
   /** Which rotationRate axis labelling the platform turned out to use. */
   gyroConvention: string;
+  /** 0–1 trust in the fitted rate used for prediction. */
+  rateQuality: number;
+  /** True when a magnetometer attitude is being used as a heading reference. */
+  headingLocked: boolean;
 };
 
 export type ClockPing = {
@@ -142,7 +147,8 @@ export const DEFAULT_DEBUG_SETTINGS = {
   // The adaptive cutoff is what trades lag against jitter, so it carries the
   // responsiveness on its own: high enough to open up as soon as the hand moves.
   beta: 0.12,
-  predictionHorizonMs: 25,
+  displayLagMs: 25,
+  predictionHorizonMs: 0,
   /**
    * Off, because latency belongs to prediction, which uses a measured rate.
    * Leading by the filter's own lag instead overshoots and then unwinds: the lag
@@ -162,10 +168,15 @@ export const DEFAULT_DEBUG_SETTINGS = {
   absoluteAiming: true,
   /** Corrects heading drift from where the player is seen to shoot. */
   driftLearningEnabled: true,
+  stillLockEnabled: true,
   invertX: false,
   invertY: false,
 } as const;
 
 export type DebugSettings = {
-  -readonly [K in keyof typeof DEFAULT_DEBUG_SETTINGS]: (typeof DEFAULT_DEBUG_SETTINGS)[K];
+  -readonly [K in keyof typeof DEFAULT_DEBUG_SETTINGS]: (typeof DEFAULT_DEBUG_SETTINGS)[K] extends number
+    ? number
+    : (typeof DEFAULT_DEBUG_SETTINGS)[K] extends boolean
+      ? boolean
+      : (typeof DEFAULT_DEBUG_SETTINGS)[K];
 };

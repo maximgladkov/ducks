@@ -58,7 +58,7 @@ const session = new ControllerSession(sendStub, {
     if (msg.type === "calib_prompt") {
       calibrating = true;
       setStatus(`Calibrate target ${msg.seq + 1}/${msg.total}`);
-      setHint("Same grip for all 9 dots — aim at the dot, hold still, FIRE");
+      setHint(`Same grip for all ${msg.total} dots — aim at the dot, hold still, FIRE`);
     }
     if (msg.type === "calib_done") {
       calibrating = false;
@@ -116,9 +116,9 @@ ws.addEventListener("close", () => {
 });
 
 const motion = new MotionPipeline({
-  onSample: (q, w, t) => {
+  onSample: (q, w, t, nq) => {
     if (!armed) return;
-    session.sendSample({ t, q, w });
+    session.sendSample({ t, q, w, nq });
   },
 });
 
@@ -128,6 +128,7 @@ const motion = new MotionPipeline({
 window.setInterval(() => {
   if (!armed) return;
   session.sendDiag(motion.getDiagnostics());
+  motion.saveBias();
 }, 500);
 
 /**

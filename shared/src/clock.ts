@@ -55,3 +55,32 @@ export function sampleAgeMs(
     hostNow - hostTimeFromController(controllerT, offsetHostMinusController),
   );
 }
+
+export function smoothSampleAgeMs(
+  prev: number,
+  raw: number,
+  alpha = 0.3,
+): number {
+  if (!Number.isFinite(prev) || prev <= 0) return raw;
+  return prev + (raw - prev) * alpha;
+}
+
+export function predictionHorizonSec(opts: {
+  sampleAgeMs: number;
+  displayLagMs: number;
+  frameMs?: number;
+  extraMs?: number;
+  quality?: number;
+  maxSec?: number;
+}): number {
+  const frameMs = opts.frameMs ?? 1000 / 60;
+  const extraMs = opts.extraMs ?? 0;
+  const quality = Math.min(1, Math.max(0, opts.quality ?? 1));
+  const rawMs =
+    Math.max(0, opts.sampleAgeMs) +
+    Math.max(0, opts.displayLagMs) +
+    frameMs +
+    extraMs;
+  const maxSec = opts.maxSec ?? 0.06;
+  return Math.min(maxSec, (rawMs * quality) / 1000);
+}

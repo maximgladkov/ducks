@@ -87,7 +87,7 @@ export function learnAimOffset(
 ): Vec2 | null {
   const radiusPx = options.radiusPx ?? 150;
   const ambiguityRatio = options.ambiguityRatio ?? 1.8;
-  const gain = options.gain ?? 0.12;
+  const gain = options.gain ?? 0.16;
   const cap = options.cap ?? Math.tan((5 * Math.PI) / 180);
 
   let nearest: { x: number; y: number } | null = null;

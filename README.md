@@ -58,7 +58,7 @@ ngrok inspector: http://127.0.0.1:4040
 
 1. Laptop: open host URL (with `sig` + `publicController` as above).
 2. Scan QR with phone → tap the button once to allow motion (iOS only grants it from a gesture, so the first tap asks and does not fire).
-3. Complete nine-point calibration (host shows targets; pull trigger on each).
+3. Complete four-corner calibration (host shows targets; pull trigger on each).
 4. Shoot moving circles; toggle **Debug** on the host for filters, prediction, aim assist, absolute vs gyro-mouse.
 5. Second phone: scan the same QR for another crosshair color.
 

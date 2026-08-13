@@ -1,9 +1,11 @@
 import {
+  angularVelocityFromQuats,
   cross3,
   expectedAccelDirection,
   normalize3,
   predictOrientation,
   quatConjugate,
+  quatFromRotationVector,
   quatIdentity,
   quatMultiply,
   quatNormalize,
@@ -33,6 +35,13 @@ import type { Quat, Vec3 } from "./types.js";
 export class AngularRateEstimator {
   private samples: Array<{ t: number; q: Quat }> = [];
   private noiseScale: number | null = null;
+  private lastNoise: number | null = null;
+  private lastSlope: Vec3 = [0, 0, 0];
+  private lastFit: {
+    origin: Quat;
+    span: number;
+    coeffs: number[][];
+  } | null = null;
   private readonly window: number;
   private readonly maxGapSec: number;
   private readonly degree: number;
@@ -46,24 +55,60 @@ export class AngularRateEstimator {
   reset(): void {
     this.samples = [];
     this.noiseScale = null;
+    this.lastNoise = null;
+    this.lastSlope = [0, 0, 0];
+    this.lastFit = null;
+  }
+
+  rate(): Vec3 {
+    return this.lastSlope;
+  }
+
+  quality(): number {
+    if (this.lastNoise === null || this.noiseScale === null) return 0.5;
+    const tol = Math.max(this.noiseScale * 2.5, 1e-12);
+    return Math.min(1, tol / Math.max(this.lastNoise, 1e-12));
+  }
+
+  residual(): number {
+    return this.lastNoise ?? 0;
+  }
+
+  poseAt(dtSec: number): Quat | null {
+    const fit = this.lastFit;
+    if (!fit || fit.span < 1e-9) return null;
+    const u = dtSec / fit.span;
+    const vec: Vec3 = [0, 0, 0];
+    for (let axis = 0; axis < 3; axis++) {
+      const c = fit.coeffs[axis]!;
+      let v = 0;
+      let p = 1;
+      for (let k = 0; k < c.length; k++) {
+        v += c[k]! * p;
+        p *= u;
+      }
+      vec[axis] = v;
+    }
+    return quatNormalize(quatMultiply(fit.origin, quatFromRotationVector(vec)));
   }
 
   /** `tSec` must share one clock across calls. */
   update(q: Quat, tSec: number): Vec3 {
     const last = this.samples[this.samples.length - 1];
-    // A gap this long means the stream stalled; the old poses say nothing about
-    // the rate now.
     if (last && (tSec - last.t > this.maxGapSec || tSec < last.t)) {
       this.samples = [];
+      this.lastFit = null;
+      this.lastSlope = [0, 0, 0];
     }
     this.samples.push({ t: tSec, q });
     while (this.samples.length > this.window) this.samples.shift();
 
     const n = this.samples.length;
-    if (n < 2) return [0, 0, 0];
+    if (n < 2) {
+      this.lastSlope = [0, 0, 0];
+      return this.lastSlope;
+    }
 
-    // Everything is measured from the oldest pose in the window, so the samples
-    // share one frame and the rotations stay small enough to be linear in time.
     const base = quatConjugate(this.samples[0]!.q);
     const times = this.samples.map((s) => s.t);
     const vectors = this.samples.map((s) =>
@@ -71,18 +116,23 @@ export class AngularRateEstimator {
     );
 
     const end = times[n - 1]!;
-    const candidates: Array<{ length: number; slope: Vec3; noise: number }> = [];
+    const candidates: Array<{
+      length: number;
+      slope: Vec3;
+      noise: number;
+      coeffs: number[][];
+      from: number;
+      span: number;
+    }> = [];
     for (let length = n; length >= 3; length -= 2) {
       const fitted = this.fitWindow(times, vectors, end, length);
       if (fitted) candidates.push({ length, ...fitted });
     }
-    if (candidates.length === 0) return [0, 0, 0];
+    if (candidates.length === 0) {
+      this.lastSlope = [0, 0, 0];
+      return this.lastSlope;
+    }
 
-    // The shortest window spans too little time for the hand to have done
-    // anything but move smoothly, so whatever it leaves over is the sensor's own
-    // noise. Averaged over seconds that becomes a stable yardstick, where the
-    // smallest residual of the moment would not be: fewer points always leave
-    // less behind, which would argue for the shortest window every time.
     const shortest = candidates[candidates.length - 1]!;
     this.noiseScale =
       this.noiseScale === null
@@ -90,9 +140,14 @@ export class AngularRateEstimator {
         : this.noiseScale * 0.98 + shortest.noise * 0.02;
 
     const tolerance = Math.max(this.noiseScale * 2.5, 1e-12);
-    // Candidates run longest first, so this takes the most averaging the motion
-    // will support.
     const chosen = candidates.find((c) => c.noise <= tolerance) ?? shortest;
+    this.lastNoise = chosen.noise;
+    this.lastSlope = chosen.slope;
+    this.lastFit = {
+      origin: this.samples[0]!.q,
+      span: chosen.span,
+      coeffs: chosen.coeffs,
+    };
     return chosen.slope;
   }
 
@@ -101,30 +156,34 @@ export class AngularRateEstimator {
     vectors: Vec3[],
     end: number,
     length: number,
-  ): { slope: Vec3; noise: number } | null {
+  ): {
+    slope: Vec3;
+    noise: number;
+    coeffs: number[][];
+    from: number;
+    span: number;
+  } | null {
     const from = times.length - length;
     const t = times.slice(from);
     const span = end - t[0]!;
     if (span < 1e-9) return null;
-    // Scaled to [-1, 0] so the normal equations stay well conditioned whatever
-    // the sample rate.
     const u = t.map((x) => (x - end) / span);
-    // A polynomial needs more points than coefficients, or it interpolates the
-    // noise instead of averaging it.
     const degree = Math.max(1, Math.min(this.degree, length - 2));
     const dof = 3 * (length - (degree + 1));
     if (dof <= 0) return null;
 
     const slope: Vec3 = [0, 0, 0];
+    const coeffs: number[][] = [];
     let ssr = 0;
     for (let axis = 0; axis < 3; axis++) {
       const y = vectors.slice(from).map((v) => v[axis]!);
       const fit = fitPolyAtEnd(u, y, degree);
       if (!fit) return null;
       slope[axis] = fit.slope / span;
+      coeffs.push(fit.coeffs);
       ssr += fit.ssr;
     }
-    return { slope, noise: Math.sqrt(ssr / dof) };
+    return { slope, noise: Math.sqrt(ssr / dof), coeffs, from, span };
   }
 }
 
@@ -136,7 +195,7 @@ function fitPolyAtEnd(
   u: number[],
   y: number[],
   degree: number,
-): { slope: number; ssr: number } | null {
+): { slope: number; ssr: number; coeffs: number[] } | null {
   const size = degree + 1;
   const moment: number[] = new Array(2 * degree + 1).fill(0);
   for (const x of u) {
@@ -171,8 +230,7 @@ function fitPolyAtEnd(
     }
     ssr += (y[i]! - predicted) ** 2;
   }
-  // The fit is a + b*u + c*u^2, so its slope at u = 0 is b.
-  return { slope: coeffs[1] ?? 0, ssr };
+  return { slope: coeffs[1] ?? 0, ssr, coeffs };
 }
 
 function solveSmall(A: number[][], b: number[]): number[] | null {
@@ -386,13 +444,20 @@ export class OrientationFusion {
     this.options = { ...DEFAULT_FUSION_OPTIONS, ...options };
   }
 
-  reset(): void {
+  reset(opts: { keepBias?: boolean } = {}): void {
+    const bias = opts.keepBias ? this.bias : ([0, 0, 0] as Vec3);
     this.q = quatIdentity();
-    this.bias = [0, 0, 0];
+    this.bias = bias;
     this.stationaryTime = 0;
     this.settleTime = 0;
     this.tiltResidual = Math.PI;
     this.seeded = false;
+  }
+
+  setBias(bias: Vec3): void {
+    const speed = Math.hypot(bias[0], bias[1], bias[2]);
+    if (!Number.isFinite(speed) || speed > 0.2) return;
+    this.bias = [bias[0], bias[1], bias[2]];
   }
 
   /** Adopts an externally known attitude, e.g. from DeviceOrientation. */
@@ -584,5 +649,59 @@ export class OrientationFusion {
     if (deviation <= near) return 1;
     if (deviation >= far) return 0;
     return 1 - (deviation - near) / (far - near);
+  }
+}
+
+export class MagnetHeadingGate {
+  private relPrev: Quat | null = null;
+  private absPrev: Quat | null = null;
+  private tPrev = 0;
+  private agree = 0;
+  private disagree = 0;
+  private trusted = false;
+  private rejected = false;
+
+  observe(relative: Quat, absolute: Quat, tSec: number): boolean {
+    if (this.rejected) return false;
+    if (this.relPrev && this.absPrev && this.tPrev > 0) {
+      const dt = tSec - this.tPrev;
+      if (dt > 1e-3 && dt < 0.25) {
+        const wr = angularVelocityFromQuats(this.relPrev, relative, dt);
+        const wa = angularVelocityFromQuats(this.absPrev, absolute, dt);
+        const speed = Math.hypot(wr[0], wr[1], wr[2]);
+        if (speed > 0.25) {
+          const err = Math.hypot(wr[0] - wa[0], wr[1] - wa[1], wr[2] - wa[2]);
+          if (err < speed * 0.45) this.agree += 1;
+          else this.disagree += 1;
+          const n = this.agree + this.disagree;
+          if (n >= 40) {
+            if (this.disagree > this.agree * 0.5) this.rejected = true;
+            else this.trusted = true;
+          }
+        }
+      }
+    }
+    this.relPrev = relative;
+    this.absPrev = absolute;
+    this.tPrev = tSec;
+    return this.trusted && !this.rejected;
+  }
+
+  isTrusted(): boolean {
+    return this.trusted && !this.rejected;
+  }
+
+  isRejected(): boolean {
+    return this.rejected;
+  }
+
+  reset(): void {
+    this.relPrev = null;
+    this.absPrev = null;
+    this.tPrev = 0;
+    this.agree = 0;
+    this.disagree = 0;
+    this.trusted = false;
+    this.rejected = false;
   }
 }

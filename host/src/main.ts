@@ -9,6 +9,9 @@ import {
   beginCalibration,
   calibTargets,
   CALIB_POINT_COUNT,
+  CALIB_FULL_COUNT,
+  CALIB_REFRESH_COUNT,
+  applyStoredCalibration,
   createPlayer,
   finishCalibration,
   handlePlayerEvent,
@@ -28,6 +31,7 @@ import {
   type PlayerRuntime,
   type Target,
 } from "./game";
+import { loadStoredCalib, saveStoredCalib } from "./calibStore";
 import {
   HostPeer,
   connectSignalling,
@@ -80,7 +84,7 @@ const calibResult = document.getElementById("calib-result")!;
 const debugEl = document.getElementById("debug")!;
 const toggleDebug = document.getElementById("toggle-debug")!;
 
-for (let i = 0; i < CALIB_POINT_COUNT; i++) {
+for (let i = 0; i < CALIB_FULL_COUNT; i++) {
   const pip = document.createElement("div");
   pip.className = "calib-pip";
   calibPips.appendChild(pip);
@@ -121,6 +125,32 @@ const CALIB_MAX_ANGLE_SPREAD = 0.06;
  */
 const CALIB_MAX_DRIFT_DEG_PER_SEC = 3;
 const SENSOR_SETTLE_TIMEOUT_MS = 10000;
+let lagFlashAt: number | null = null;
+
+function startLagFlash(): void {
+  const el = document.getElementById("lag-flash");
+  setCalibResult("Pull the trigger when the screen flashes");
+  window.setTimeout(() => {
+    lagFlashAt = performance.now();
+    el?.classList.remove("hidden");
+    window.setTimeout(() => el?.classList.add("hidden"), 70);
+  }, 700 + Math.random() * 800);
+}
+
+function finishLagFlash(hostNow: number): void {
+  if (lagFlashAt === null) return;
+  const delay = hostNow - lagFlashAt;
+  lagFlashAt = null;
+  const lag = Math.max(0, Math.min(120, delay - 180));
+  settings.displayLagMs = Math.round(lag);
+  saveSettings(settings);
+  const input = document.getElementById("displayLagMs") as HTMLInputElement | null;
+  const label = document.getElementById("v-displayLagMs");
+  if (input) input.value = String(settings.displayLagMs);
+  if (label) label.textContent = String(settings.displayLagMs);
+  setCalibResult(`Display lag set to ${settings.displayLagMs} ms`);
+  window.setTimeout(() => setCalibResult(null), 4000);
+}
 
 function screenSize(): [number, number] {
   return [canvas.clientWidth, canvas.clientHeight];
@@ -230,10 +260,11 @@ function hideCalibOverlay(): void {
   setCalibStatus(null);
 }
 
-function updateCalibPips(seq: number): void {
+function updateCalibPips(seq: number, total: number): void {
   [...calibPips.children].forEach((pip, i) => {
+    (pip as HTMLElement).style.display = i < total ? "" : "none";
     pip.classList.toggle("done", i < seq);
-    pip.classList.toggle("on", i === seq);
+    pip.classList.toggle("on", i === seq && i < total);
   });
 }
 
@@ -250,6 +281,8 @@ function updateCalibDodge(x: number, y: number): void {
 }
 
 function showCalibCorner(seq: number): void {
+  const p = calibratingPlayerId ? players.get(calibratingPlayerId) : undefined;
+  const total = p?.calibTotal ?? CALIB_POINT_COUNT;
   const c = calibTargets(screenSize())[seq];
   if (!c) return;
   calibSeq = seq;
@@ -259,8 +292,8 @@ function showCalibCorner(seq: number): void {
   calibDot.style.left = `${c[0]}px`;
   calibDot.style.top = `${c[1]}px`;
   calibDot.classList.remove("hidden");
-  calibCount.textContent = `TARGET ${seq + 1} / ${CALIB_POINT_COUNT}`;
-  updateCalibPips(seq);
+  calibCount.textContent = `TARGET ${seq + 1} / ${total}`;
+  updateCalibPips(seq, total);
   updateCalibDodge(c[0], c[1]);
   setCalibStatus("Aim at the glowing dot, hold still, then pull the trigger");
 }
@@ -336,6 +369,18 @@ function waitForSensors(playerId: string, since: number): void {
       converged: p.sensorReady,
       tiltDeg: Number(p.sensorTiltDeg.toFixed(2)),
     });
+    const stored = loadStoredCalib(screenSize());
+    if (stored) {
+      applyStoredCalibration(p, stored);
+      setCalibResult(
+        `Restored aim · ${stored.label} · ±${stored.maxError.toFixed(0)}px — 4-point refresh`,
+      );
+      startCalibration(playerId, {
+        total: CALIB_REFRESH_COUNT,
+        keepMapping: true,
+      });
+      return;
+    }
     startCalibration(playerId);
     return;
   }
@@ -348,29 +393,34 @@ function waitForSensors(playerId: string, since: number): void {
   window.setTimeout(() => waitForSensors(playerId, since), 250);
 }
 
-function startCalibration(playerId: string): void {
+function startCalibration(
+  playerId: string,
+  opts: { total?: number; keepMapping?: boolean } = {},
+): void {
   const p = players.get(playerId);
   const peer = peers.get(playerId);
   if (!p || !peer) return;
   calibratingPlayerId = playerId;
   calibCapture = null;
   setCalibResult(null);
-  beginCalibration(p);
+  beginCalibration(p, opts);
+  const total = p.calibTotal;
   diagLog("calib_start", {
     id: playerId,
     screen: screenSize(),
-    targets: calibTargets(screenSize()),
+    targets: calibTargets(screenSize()).slice(0, total),
     refInverse: roundAll(p.refInverse),
+    refresh: total < CALIB_POINT_COUNT,
   });
   showCalibCorner(0);
   peer.send({
     type: "status",
-    text: `Hold phone however you like — keep that grip for all ${CALIB_POINT_COUNT} targets`,
+    text: `Hold phone however you like — keep that grip for all ${total} targets`,
   });
   peer.send({
     type: "calib_prompt",
     seq: 0,
-    total: CALIB_POINT_COUNT,
+    total,
     corner: calibTargets(screenSize())[0]!,
   });
 }
@@ -447,14 +497,14 @@ function completeCalibCapture(p: PlayerRuntime): void {
   });
   peer.send({
     type: "status",
-    text: `Target ${n}/${CALIB_POINT_COUNT} locked (${((angleSpread * 180) / Math.PI).toFixed(1)}°)`,
+    text: `Target ${n}/${p.calibTotal} locked (${((angleSpread * 180) / Math.PI).toFixed(1)}°)`,
   });
-  if (n < CALIB_POINT_COUNT) {
+  if (n < p.calibTotal) {
     showCalibCorner(n);
     peer.send({
       type: "calib_prompt",
       seq: n,
-      total: CALIB_POINT_COUNT,
+      total: p.calibTotal,
       corner: calibTargets(screenSize())[n]!,
     });
     return;
@@ -463,6 +513,17 @@ function completeCalibCapture(p: PlayerRuntime): void {
   diagLog("calib_result", { id: p.id, ...result });
   hideCalibCorner();
   calibratingPlayerId = null;
+  if (result.ok && p.homography) {
+    saveStoredCalib({
+      screen: screenSize(),
+      H: p.homography,
+      muzzle: p.aimBasis.muzzle,
+      label: p.aimBasis.label,
+      model: result.model ?? "affine",
+      maxError: result.errorPx,
+      meanError: result.meanError ?? result.errorPx,
+    });
+  }
   const quality = result.rough ? "rough — redo for tighter aim" : "OK";
   const summary = result.ok
     ? `${quality} · ${result.gripLabel} · accuracy ±${result.errorPx.toFixed(0)}px`
@@ -494,8 +555,11 @@ function buildDebugHud(): void {
     <label>beta Hz per deg/s (flick responsiveness) <span id="v-beta"></span>
       <input id="beta" type="range" min="0" max="0.3" step="0.005" />
     </label>
-    <label>prediction horizon ms <span id="v-predictionHorizonMs"></span>
-      <input id="predictionHorizonMs" type="range" min="0" max="120" step="1" />
+    <label>display lag ms <span id="v-displayLagMs"></span>
+      <input id="displayLagMs" type="range" min="0" max="120" step="1" />
+    </label>
+    <label>prediction extra ms <span id="v-predictionHorizonMs"></span>
+      <input id="predictionHorizonMs" type="range" min="0" max="80" step="1" />
     </label>
     <label>filter lead (lag cancellation) <span id="v-filterLeadGain"></span>
       <input id="filterLeadGain" type="range" min="0" max="1.5" step="0.05" />
@@ -511,11 +575,19 @@ function buildDebugHud(): void {
     <label><input id="aimAssistEnabled" type="checkbox" /> aim assist</label>
     <label><input id="absoluteAiming" type="checkbox" /> absolute aiming (vs gyro mouse)</label>
     <label><input id="driftLearningEnabled" type="checkbox" /> learn drift from shots</label>
+    <label><input id="stillLockEnabled" type="checkbox" /> still-lock when holding</label>
     <label><input id="invertX" type="checkbox" /> invert X</label>
     <label><input id="invertY" type="checkbox" /> invert Y</label>
     <label><input id="stationaryMode" type="checkbox" /> stationary target mode</label>
     <div class="row">
-      <button type="button" id="recalibrate">Recalibrate selected / first</button>
+      <button type="button" id="recalibrate">Recalibrate (4 corners)</button>
+      <button type="button" id="refresh-aim">Refresh 4 corners</button>
+      <button type="button" id="full-calib">9-point (thorough)</button>
+    </div>
+    <div class="row">
+      <button type="button" id="lag-late">Aim feels late</button>
+      <button type="button" id="lag-early">Aim feels early</button>
+      <button type="button" id="lag-flash">Flash lag test</button>
     </div>
   `;
 
@@ -534,6 +606,7 @@ function buildDebugHud(): void {
 
   bindRange("minCutoff");
   bindRange("beta");
+  bindRange("displayLagMs");
   bindRange("predictionHorizonMs");
   bindRange("filterLeadGain");
   bindRange("aimAssistRadius");
@@ -552,6 +625,7 @@ function buildDebugHud(): void {
   bindCheck("aimAssistEnabled");
   bindCheck("absoluteAiming");
   bindCheck("driftLearningEnabled");
+  bindCheck("stillLockEnabled");
   bindCheck("invertX");
   bindCheck("invertY");
 
@@ -566,6 +640,33 @@ function buildDebugHud(): void {
     const id = calibratingPlayerId ?? [...players.keys()][0];
     if (id) startCalibration(id);
   };
+  document.getElementById("refresh-aim")!.onclick = () => {
+    const id = calibratingPlayerId ?? [...players.keys()][0];
+    if (id) {
+      startCalibration(id, { total: CALIB_REFRESH_COUNT, keepMapping: true });
+    }
+  };
+  document.getElementById("full-calib")!.onclick = () => {
+    const id = calibratingPlayerId ?? [...players.keys()][0];
+    if (id) startCalibration(id, { total: CALIB_FULL_COUNT });
+  };
+  document.getElementById("lag-late")!.onclick = () => {
+    settings.displayLagMs = Math.min(120, settings.displayLagMs + 8);
+    saveSettings(settings);
+    const input = document.getElementById("displayLagMs") as HTMLInputElement | null;
+    const label = document.getElementById("v-displayLagMs");
+    if (input) input.value = String(settings.displayLagMs);
+    if (label) label.textContent = String(settings.displayLagMs);
+  };
+  document.getElementById("lag-early")!.onclick = () => {
+    settings.displayLagMs = Math.max(0, settings.displayLagMs - 8);
+    saveSettings(settings);
+    const input = document.getElementById("displayLagMs") as HTMLInputElement | null;
+    const label = document.getElementById("v-displayLagMs");
+    if (input) input.value = String(settings.displayLagMs);
+    if (label) label.textContent = String(settings.displayLagMs);
+  };
+  document.getElementById("lag-flash")!.onclick = () => startLagFlash();
 }
 
 toggleDebug.onclick = () => {
@@ -584,7 +685,7 @@ function updateDebugStats(): void {
     const planeStr = plane
       ? `plane=(${plane[0].toFixed(3)},${plane[1].toFixed(3)})`
       : "plane=—";
-    return `P${p.index + 1} ${p.transport} rtt=${p.rtt.toFixed(1)}ms off=${p.clockOffset.toFixed(1)} age=${p.sampleAge.toFixed(1)}ms pkts=${rate} drop~${peer?.dropped ?? 0} ${planeStr}`;
+    return `P${p.index + 1} ${p.transport} rtt=${p.rtt.toFixed(1)}ms off=${p.clockOffset.toFixed(1)} age=${p.sampleAge.toFixed(1)}ms hor=${p.horizonMs.toFixed(0)}ms nq=${p.rateQuality.toFixed(2)} pkts=${rate} drop~${peer?.dropped ?? 0} ${planeStr}`;
   });
   let calibLine = "";
   if (calibratingPlayerId) {
@@ -594,12 +695,24 @@ function updateDebugStats(): void {
     const target = targets[Math.min(seq, targets.length - 1)]!;
     if (p) {
       const err = Math.hypot(p.aim[0] - target[0], p.aim[1] - target[1]);
-      calibLine = `<div>calib target ${seq + 1}/${CALIB_POINT_COUNT} · crosshair error ${err.toFixed(0)}px · capture ${calibCapture?.samples.length ?? 0}</div>`;
+      calibLine = `<div>calib target ${seq + 1}/${p.calibTotal} · crosshair error ${err.toFixed(0)}px · capture ${calibCapture?.samples.length ?? 0}</div>`;
     }
   } else {
     const p0 = [...players.values()][0];
     if (p0?.homography) {
-      calibLine = `<div>grip: ${p0.gripLabel}</div>`;
+      const bench = p0.bench.snapshot();
+      const jitter =
+        bench.staticRmsPx != null ? `jitter ${bench.staticRmsPx.toFixed(1)}px` : "";
+      const move =
+        bench.movingResidualPx != null
+          ? `path ${bench.movingResidualPx.toFixed(1)}px`
+          : "";
+      const drift =
+        bench.yawDriftDegPerMin != null
+          ? `drift ${bench.yawDriftDegPerMin.toFixed(2)}°/min`
+          : "";
+      const warn = p0.needsRecal ? " · recalibrate" : "";
+      calibLine = `<div>grip: ${p0.gripLabel} · lag ${settings.displayLagMs}ms ${jitter} ${move} ${drift}${warn}</div>`;
     }
   }
   el.innerHTML = `<div>FPS ${fps.toFixed(0)} · frame ${frameTime.toFixed(1)}ms</div>${lines.map((l) => `<div>${l}</div>`).join("")}${calibLine}<div>ghosts: raw / filtered / predicted</div>`;
@@ -650,6 +763,9 @@ function frame(now: number): void {
 
   for (const p of players.values()) {
     updatePlayerFrame(p, settings, screenSize(), targets, dt, debugOpen);
+    if (p.needsRecal && !p.calibrating && calibratingPlayerId === null) {
+      setCalibResult("Aim drifted — recalibrate (DBG → Recalibrate)");
+    }
   }
 
   draw();
@@ -679,6 +795,10 @@ function addPlayer(playerId: string): void {
         calibrating: p.calibrating,
         aimPx: roundAll(p.aim, 1),
       });
+      if (event.type === "trigger_down" && lagFlashAt !== null) {
+        finishLagFlash(performance.now());
+        return;
+      }
       if (p.calibrating) {
         handlePlayerEvent(
           p,

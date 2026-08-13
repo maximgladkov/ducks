@@ -6,3 +6,6 @@ export * from "./clock.js";
 export * from "./aim.js";
 export * from "./grip.js";
 export * from "./fusion.js";
+export * from "./stillLock.js";
+export * from "./bench.js";
+export * from "./sampleAt.js";

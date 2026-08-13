@@ -1,6 +1,7 @@
 import {
   AngularRateEstimator,
   GyroAxisDetector,
+  MagnetHeadingGate,
   OrientationFusion,
   angularVelocityFromQuats,
   deviceOrientationToQuaternion,
@@ -18,7 +19,7 @@ export type SensorMode =
   | "starting";
 
 export type SensorHandlers = {
-  onSample: (q: Quat, w: Vec3, t: number) => void;
+  onSample: (q: Quat, w: Vec3, t: number, nq: number) => void;
   onMode?: (mode: SensorMode) => void;
   onError?: (message: string) => void;
 };
@@ -43,6 +44,7 @@ type GyroscopeLike = {
 const MAX_EMIT_HZ = 125;
 const SENSOR_HZ = 120;
 const DEG = Math.PI / 180;
+const BIAS_KEY = "duckhunt.gyroBias.v1";
 
 /**
  * Turns phone motion sensors into a stream of orientation samples.
@@ -56,10 +58,14 @@ export class MotionPipeline {
   private handlers: SensorHandlers;
   private mode: SensorMode = "starting";
   private orientationSensor: OrientationSensorLike | null = null;
+  private absoluteSensor: OrientationSensorLike | null = null;
   private gyro: GyroscopeLike | null = null;
   private fusion = new OrientationFusion();
   private fusionActive = false;
   private gyroAxes = new GyroAxisDetector();
+  private headingGate = new MagnetHeadingGate();
+  private absQ: Quat | null = null;
+  private headingLocked = false;
   private eulerQ: Quat | null = null;
   private eulerRate: Vec3 = [0, 0, 0];
   private lastEulerT = 0;
@@ -91,10 +97,10 @@ export class MotionPipeline {
     converged: boolean;
     tiltResidualDeg: number;
     gyroConvention: string;
+    rateQuality: number;
+    headingLocked: boolean;
   } {
     const bias = this.fusion.biasEstimate();
-    // Only the fusion path has a settling transient; a platform-supplied
-    // attitude is trustworthy from its first reading.
     const fused = this.mode === "fusion";
     return {
       mode: this.mode,
@@ -106,6 +112,8 @@ export class MotionPipeline {
       converged: fused ? this.fusion.isConverged() : this.mode !== "starting",
       tiltResidualDeg: fused ? this.fusion.tiltResidualDeg() : 0,
       gyroConvention: this.gyroAxes.report(),
+      rateQuality: this.rateFit.quality(),
+      headingLocked: this.headingLocked,
     };
   }
 
@@ -130,9 +138,31 @@ export class MotionPipeline {
   }
 
   recentre(): void {
-    this.fusion.reset();
+    this.fusion.reset({ keepBias: true });
     this.eulerQ = null;
     this.lastRawQ = quatIdentity();
+  }
+
+  loadBias(): void {
+    try {
+      const raw = localStorage.getItem(BIAS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Vec3;
+      if (Array.isArray(parsed) && parsed.length === 3) {
+        this.fusion.setBias([Number(parsed[0]), Number(parsed[1]), Number(parsed[2])]);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  saveBias(): void {
+    if (!this.fusion.isStationary()) return;
+    try {
+      localStorage.setItem(BIAS_KEY, JSON.stringify(this.fusion.biasEstimate()));
+    } catch {
+      /* ignore */
+    }
   }
 
   start(): void {
@@ -147,8 +177,25 @@ export class MotionPipeline {
       RelativeOrientationSensor?: new (opts: {
         frequency: number;
       }) => OrientationSensorLike;
+      AbsoluteOrientationSensor?: new (opts: {
+        frequency: number;
+      }) => OrientationSensorLike;
       Gyroscope?: new (opts: { frequency: number }) => GyroscopeLike;
     };
+
+    this.loadBias();
+
+    if (scope.AbsoluteOrientationSensor) {
+      try {
+        const sensor = new scope.AbsoluteOrientationSensor({ frequency: SENSOR_HZ });
+        sensor.addEventListener("reading", () => this.onAbsoluteReading());
+        sensor.addEventListener("error", () => this.dropAbsoluteSensor());
+        sensor.start();
+        this.absoluteSensor = sensor;
+      } catch {
+        this.absoluteSensor = null;
+      }
+    }
 
     if (scope.RelativeOrientationSensor) {
       try {
@@ -187,8 +234,10 @@ export class MotionPipeline {
   stop(): void {
     this.running = false;
     this.orientationSensor?.stop();
+    this.absoluteSensor?.stop();
     this.gyro?.stop();
     this.orientationSensor = null;
+    this.absoluteSensor = null;
     this.gyro = null;
     if (this.usingDeviceOrientation) {
       window.removeEventListener("deviceorientation", this.onDeviceOrientation);
@@ -233,6 +282,24 @@ export class MotionPipeline {
     this.setMode("device-orientation");
   }
 
+  private dropAbsoluteSensor(): void {
+    if (!this.absoluteSensor) return;
+    try {
+      this.absoluteSensor.stop();
+    } catch {
+      /* already dead */
+    }
+    this.absoluteSensor = null;
+    this.absQ = null;
+    this.headingLocked = false;
+  }
+
+  private onAbsoluteReading(): void {
+    const raw = this.absoluteSensor?.quaternion;
+    if (!raw || raw.length < 4) return;
+    this.absQ = quatNormalize([raw[0]!, raw[1]!, raw[2]!, raw[3]!]);
+  }
+
   private gyroRate(): Vec3 {
     return [this.gyro?.x ?? 0, this.gyro?.y ?? 0, this.gyro?.z ?? 0];
   }
@@ -245,7 +312,21 @@ export class MotionPipeline {
 
     const measured = this.gyroRate();
     const hasGyro = Math.hypot(measured[0], measured[1], measured[2]) >= 1e-6;
-    this.emit(q, hasGyro ? measured : null, t);
+    if (this.absQ) {
+      this.headingLocked = this.headingGate.observe(q, this.absQ, t / 1000);
+    }
+    if (this.headingLocked && this.absQ && hasGyro) {
+      const dt =
+        this.lastEmitT > 0 ? Math.max(1e-4, (t - this.lastEmitT) / 1000) : 1 / SENSOR_HZ;
+      if (!this.fusionActive) {
+        this.fusion.seed(q);
+        this.fusionActive = true;
+        this.setMode("fusion");
+      }
+      this.emit(this.fusion.updateWithReference(measured, this.absQ, dt, 1), t);
+      return;
+    }
+    this.emit(q, t);
   }
 
   private onDeviceOrientation = (ev: DeviceOrientationEvent): void => {
@@ -263,7 +344,7 @@ export class MotionPipeline {
     this.lastEulerT = t;
 
     if (this.fusionActive) return;
-    this.emit(q, null, t);
+    this.emit(q, t);
   };
 
   private onDeviceMotion = (ev: DeviceMotionEvent): void => {
@@ -308,11 +389,12 @@ export class MotionPipeline {
         this.setMode("fusion");
       }
       const gyro = this.gyroAxes.map(raw);
-      this.emit(
-        this.fusion.updateWithReference(gyro, this.eulerQ, dt, 1),
-        this.fusion.rate(gyro),
-        t,
-      );
+      const reference =
+        this.absQ && this.headingGate.observe(this.eulerQ, this.absQ, t / 1000)
+          ? this.absQ
+          : this.eulerQ;
+      this.headingLocked = reference === this.absQ;
+      this.emit(this.fusion.updateWithReference(gyro, reference, dt, 1), t);
       return;
     }
 
@@ -325,7 +407,7 @@ export class MotionPipeline {
       this.fusionActive = true;
       this.setMode("fusion");
     }
-    this.emit(this.fusion.update(gyro, accel, dt), this.fusion.rate(gyro), t);
+    this.emit(this.fusion.update(gyro, accel, dt), t);
   };
 
   /**
@@ -338,11 +420,7 @@ export class MotionPipeline {
     return Math.abs(raw - now) > 5000 ? now : raw;
   }
 
-  /**
-   * `w` may be null, meaning no gyroscope reading stands behind it and the rate
-   * should be read off the recent attitudes instead.
-   */
-  private emit(q: Quat, w: Vec3 | null, t: number): void {
+  private emit(q: Quat, t: number): void {
     if (!this.running) return;
     if (this.lastEmitT > 0 && t - this.lastEmitT < 1000 / MAX_EMIT_HZ) return;
     if (this.lastEmitT > 0) {
@@ -351,11 +429,9 @@ export class MotionPipeline {
     }
     this.lastRawQ = q;
     this.lastEmitT = t;
-    // Kept warm either way, so the window is already full if the gyroscope drops
-    // out mid-session.
     const fitted = this.rateFit.update(q, t / 1000);
-    const framed = toScreenFrame(q, w ?? fitted, this.screenAngle);
-    this.handlers.onSample(framed.q, framed.w, t);
+    const framed = toScreenFrame(q, fitted, this.screenAngle);
+    this.handlers.onSample(framed.q, framed.w, t, this.rateFit.quality());
   }
 }
 

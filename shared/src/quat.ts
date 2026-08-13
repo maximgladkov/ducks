@@ -146,6 +146,12 @@ export function quatToRotationVector(q: Quat): Vec3 {
   return [x * scale, y * scale, z * scale];
 }
 
+export function quatFromRotationVector(v: Vec3): Quat {
+  const angle = Math.hypot(v[0], v[1], v[2]);
+  if (angle < 1e-12) return quatIdentity();
+  return quatFromAxisAngle(v, angle);
+}
+
 /**
  * Which device axis the player treats as the barrel. Axis flips and swaps are
  * deliberately absent: they are linear, so the calibration homography absorbs
