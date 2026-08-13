@@ -110,6 +110,26 @@ describe("AngularRateEstimator poseAt", () => {
     );
     expect(fit.quality()).toBeGreaterThan(0.4);
   });
+
+  it("does not invent motion when held still", () => {
+    const fit = new AngularRateEstimator();
+    let seed = 3;
+    const rand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    const rest: Quat = [0, 0, 0, 1];
+    for (let i = 0; i < 40; i++) {
+      const jitter = quatFromAxisAngle(
+        [0, 0, 1],
+        d2r((rand() - 0.5) * 0.4),
+      );
+      fit.update(quatMultiply(rest, jitter), i * STEP);
+    }
+    const now = fit.poseAt(0)!;
+    const ahead = fit.poseAt(0.05)!;
+    expect(angleBetweenDeg(now, ahead)).toBeLessThan(1);
+  });
 });
 
 describe("StillLock", () => {

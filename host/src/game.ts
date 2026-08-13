@@ -517,7 +517,7 @@ function orientationForNow(
     quality: p.rateQuality,
   });
   p.horizonMs = horizon * 1000;
-  const predictedQ = p.rateFit.poseAt(horizon) ?? predictOrientationSafe(q, w, horizon);
+  const predictedQ = predictOrientationSafe(q, w, horizon);
   return {
     base,
     predicted: applyReferenceFrame(predictedQ, p.refInverse),

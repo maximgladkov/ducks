@@ -65,7 +65,7 @@ export class AngularRateEstimator {
   }
 
   quality(): number {
-    if (this.lastNoise === null || this.noiseScale === null) return 0.5;
+    if (this.lastNoise === null || this.noiseScale === null) return 0;
     const tol = Math.max(this.noiseScale * 2.5, 1e-12);
     return Math.min(1, tol / Math.max(this.lastNoise, 1e-12));
   }
@@ -74,20 +74,29 @@ export class AngularRateEstimator {
     return this.lastNoise ?? 0;
   }
 
+  /**
+   * Orientation `dtSec` after the newest sample.
+   *
+   * The polynomial is only evaluated at the end of the window (now). Past that
+   * the future is a constant-rate step: a quadratic fitted to noise explodes as
+   * soon as it is asked to extrapolate, which is what makes predicted aim wander
+   * while the phone is barely moving.
+   */
   poseAt(dtSec: number): Quat | null {
+    const now = this.fittedNow();
+    if (!now) return null;
+    if (Math.abs(dtSec) < 1e-4) return now;
+    return predictOrientation(now, this.lastSlope, dtSec);
+  }
+
+  private fittedNow(): Quat | null {
+    const last = this.samples[this.samples.length - 1];
+    if (!last) return null;
     const fit = this.lastFit;
-    if (!fit || fit.span < 1e-9) return null;
-    const u = dtSec / fit.span;
+    if (!fit || fit.span < 1e-9) return last.q;
     const vec: Vec3 = [0, 0, 0];
     for (let axis = 0; axis < 3; axis++) {
-      const c = fit.coeffs[axis]!;
-      let v = 0;
-      let p = 1;
-      for (let k = 0; k < c.length; k++) {
-        v += c[k]! * p;
-        p *= u;
-      }
-      vec[axis] = v;
+      vec[axis] = fit.coeffs[axis]![0] ?? 0;
     }
     return quatNormalize(quatMultiply(fit.origin, quatFromRotationVector(vec)));
   }
