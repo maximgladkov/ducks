@@ -17,6 +17,7 @@ import {
   referenceFrameForRecentre,
   solveAffine,
   solveHomography,
+  crossValidateAffine,
   type Mat3,
   type Quat,
   type Vec2,
@@ -50,8 +51,8 @@ function quatFromTo(from: Vec3, to: Vec3): Quat {
  * a minimal rotation instead would make several muzzle axes indistinguishable
  * for reasons that have nothing to do with how anyone actually holds a phone.
  */
-function poseAiming(point: Vec2, muzzle: Vec3): Quat {
-  const dx = point[0] - CENTRE[0];
+function poseAiming(point: Vec2, muzzle: Vec3, eyeX = 0): Quat {
+  const dx = point[0] - CENTRE[0] - eyeX;
   const dz = -(point[1] - CENTRE[1]);
   const yaw = Math.atan(dx / DISTANCE_PX);
   const pitch = Math.atan((dz * Math.cos(yaw)) / DISTANCE_PX);
@@ -199,13 +200,34 @@ describe("detectAimBasis", () => {
     expect(wrong!.meanError).toBeGreaterThan(fit.meanError * 10);
   });
 
-  // Four points leave a projective fit no slack at all, but an affine one is
-  // determined by three, so the fourth is still a genuine held-out check.
-  it("can still validate a four-point fit, through the affine mapping", () => {
+  // Four points determine a homography exactly. Affine leave-one-out is the
+  // check that used to run, but a player sitting off-centre makes the screen a
+  // trapezoid, and three corners then "predict" the fourth hundreds of pixels
+  // off even when every capture is perfect.
+  it("fits a four-point homography instead of treating perspective as error", () => {
     const corners = POINTS.slice(0, 4);
-    const fit = detectAimBasis(recentredPoses(corners, [0, 1, 0]), corners)!;
+    const eyeX = 480;
+    const muzzle: Vec3 = [0, 1, 0];
+    const poseAt = (point: Vec2) => poseAiming(point, muzzle, eyeX);
+    const ref = referenceFrameForRecentre(poseAt(CENTRE));
+    const recentred = corners.map((pt) => applyReferenceFrame(poseAt(pt), ref));
+    const planes = recentred.map(
+      (q) => orientationToPlane(q, { muzzle, label: "" })!,
+    );
+    const affineCv = crossValidateAffine(planes, corners)!;
+    const fit = detectAimBasis(recentred, corners)!;
+    expect(affineCv.maxError).toBeGreaterThan(50);
+    expect(fit.model).toBe("projective");
+    expect(fit.validated).toBe(false);
+    expect(fit.maxError).toBeLessThan(1);
+    expect(fit.maxError).toBeLessThan(affineCv.maxError / 20);
+  });
+
+  it("validates corners plus centre with homography leave-one-out", () => {
+    const five = [...POINTS.slice(0, 4), POINTS[8]!];
+    const fit = detectAimBasis(recentredPoses(five, [0, 1, 0]), five)!;
     expect(fit.validated).toBe(true);
-    expect(fit.model).toBe("affine");
+    expect(fit.maxError).toBeLessThan(2);
   });
 
   it("only pays for projective terms when they earn it on held-out error", () => {

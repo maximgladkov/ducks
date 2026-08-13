@@ -1122,7 +1122,7 @@ export function finishCalibration(
     };
   }
 
-  const worstIndex = worstCalibPoint(recentred, fit.basis, used);
+  const worstIndex = worstCalibPoint(recentred, fit.basis, used, fit.model);
   const diagonal = Math.hypot(screen[0], screen[1]);
   if (fit.maxError > diagonal * CALIB_USABLE_ERROR_FRACTION) {
     p.aimBasis = fit.basis;
@@ -1197,19 +1197,22 @@ function worstCalibPoint(
   quats: Quat[],
   basis: AimBasis,
   targets: Vec2[],
+  model: string,
 ): number {
   const planes = quats.map((q) => orientationToPlane(q, basis));
   if (planes.some((plane) => !plane)) return 0;
-  const cv = crossValidateHomography(planes as Vec2[], targets);
-  if (!cv) return 0;
+  const src = planes as Vec2[];
+  const solve = model === "affine" ? solveAffine : solveHomography;
+  const minTrain = model === "affine" ? 3 : 4;
+  if (src.length < minTrain + 1) return 0;
   let worst = 0;
   let worstErr = -1;
   for (let i = 0; i < targets.length; i++) {
-    const trainSrc = (planes as Vec2[]).filter((_, j) => j !== i);
+    const trainSrc = src.filter((_, j) => j !== i);
     const trainDst = targets.filter((_, j) => j !== i);
-    const H = solveHomography(trainSrc, trainDst);
+    const H = solve(trainSrc, trainDst);
     if (!H) continue;
-    const mapped = applyHomography(H, (planes as Vec2[])[i]!);
+    const mapped = applyHomography(H, src[i]!);
     const err = Math.hypot(mapped[0] - targets[i]![0], mapped[1] - targets[i]![1]);
     if (err > worstErr) {
       worstErr = err;

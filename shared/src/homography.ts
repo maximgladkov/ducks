@@ -105,6 +105,12 @@ export type PlaneFit = {
  * only earns its two extra parameters when the captures are consistent enough to
  * pin them down. Requiring a clear margin means noisy calibrations fall back to
  * the mapping that cannot blow up, rather than buying a singularity with noise.
+ *
+ * Four correspondences determine a homography exactly, so projective
+ * leave-one-out is unavailable. Affine leave-one-out still runs, but on four
+ * corners it measures perspective (three corners predicting the fourth), not
+ * whether the player aimed at the dots. That path uses the homography and
+ * in-sample residual instead.
  */
 export function fitPlaneToScreen(src: Vec2[], dst: Vec2[]): PlaneFit | null {
   const projective = solveHomography(src, dst);
@@ -118,9 +124,19 @@ export function fitPlaneToScreen(src: Vec2[], dst: Vec2[]): PlaneFit | null {
       ? { H: projective, model: "projective", ...projectiveCv }
       : { H: affine, model: "affine", ...affineCv };
   }
-  if (affine && affineCv) return { H: affine, model: "affine", ...affineCv };
   if (projective && projectiveCv)
     return { H: projective, model: "projective", ...projectiveCv };
+  if (projective && !projectiveCv) {
+    const residuals = homographyResiduals(projective, src, dst);
+    return {
+      H: projective,
+      model: "projective",
+      maxError: Math.max(0, ...residuals),
+      meanError:
+        residuals.reduce((a, b) => a + b, 0) / Math.max(1, residuals.length),
+    };
+  }
+  if (affine && affineCv) return { H: affine, model: "affine", ...affineCv };
   return null;
 }
 

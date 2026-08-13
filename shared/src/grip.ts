@@ -67,7 +67,7 @@ export function detectAimBasis(
         H: chosen.H,
         maxError: chosen.maxError,
         meanError: chosen.meanError,
-        validated: true,
+        validated: n >= 5,
         model: chosen.model,
       };
     } else {
