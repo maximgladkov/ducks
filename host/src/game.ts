@@ -28,6 +28,7 @@ import {
   planeToAnglesDeg,
   predictOrientationSafe,
   predictionHorizonSec,
+  catchUpSec,
   quatConjugate,
   quatIdentity,
   quatMultiply,
@@ -505,19 +506,25 @@ function orientationForNow(
   }
 
   const base = applyReferenceFrame(q, p.refInverse);
-  if (!settings.predictionEnabled) {
-    p.horizonMs = 0;
+  const catchUp = catchUpSec(rawAge);
+  const lead = settings.predictionEnabled
+    ? predictionHorizonSec({
+        sampleAgeMs: 0,
+        displayLagMs: settings.displayLagMs,
+        extraMs: settings.predictionHorizonMs,
+        frameMs: 0,
+        quality: p.rateQuality,
+      })
+    : 0;
+  const horizon = catchUp + lead;
+  p.horizonMs = horizon * 1000;
+  if (horizon < 1e-4) {
     return { base, predicted: base };
   }
-
-  const horizon = predictionHorizonSec({
-    sampleAgeMs: p.sampleAge,
-    displayLagMs: settings.displayLagMs,
-    extraMs: settings.predictionHorizonMs,
-    quality: p.rateQuality,
+  const predictedQ = predictOrientationSafe(q, w, horizon, {
+    minSpeed: 0.1,
+    maxDtSec: 0.08,
   });
-  p.horizonMs = horizon * 1000;
-  const predictedQ = predictOrientationSafe(q, w, horizon);
   return {
     base,
     predicted: applyReferenceFrame(predictedQ, p.refInverse),

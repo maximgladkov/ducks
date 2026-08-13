@@ -65,6 +65,11 @@ export function smoothSampleAgeMs(
   return prev + (raw - prev) * alpha;
 }
 
+export function catchUpSec(sampleAgeMs: number, maxSec = 0.045): number {
+  if (!Number.isFinite(sampleAgeMs) || sampleAgeMs <= 0) return 0;
+  return Math.min(maxSec, sampleAgeMs / 1000);
+}
+
 export function predictionHorizonSec(opts: {
   sampleAgeMs: number;
   displayLagMs: number;

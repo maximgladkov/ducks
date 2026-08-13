@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AimBench } from "../src/bench.js";
 import {
   predictionHorizonSec,
+  catchUpSec,
   smoothSampleAgeMs,
 } from "../src/clock.js";
 import {
@@ -55,6 +56,14 @@ describe("predictionHorizonSec", () => {
       maxSec: 1,
     });
     expect(half).toBeCloseTo(full * 0.4, 5);
+  });
+});
+
+describe("catchUpSec", () => {
+  it("advances by sample age up to a short cap", () => {
+    expect(catchUpSec(0)).toBe(0);
+    expect(catchUpSec(16)).toBeCloseTo(0.016, 5);
+    expect(catchUpSec(80)).toBeCloseTo(0.045, 5);
   });
 });
 
