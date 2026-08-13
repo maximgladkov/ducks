@@ -11,6 +11,7 @@ import {
 export type MatchPhase =
   | "lobby"
   | "title"
+  | "start"
   | "intro"
   | "wave"
   | "resolve"
@@ -27,12 +28,24 @@ export type DuckCounts = {
   escaping: number;
 };
 
+export type SfxName =
+  | "got"
+  | "laugh"
+  | "miss"
+  | "clear"
+  | "gameover"
+  | "count"
+  | "start";
+
+export type MusicName = "title" | "dog" | "duck" | "stop";
+
 export type MatchCue =
   | { type: "spawnTitle" }
   | { type: "spawnWave"; count: number }
   | { type: "startFlyAway" }
   | { type: "ammo" }
-  | { type: "sfx"; name: "got" | "laugh" }
+  | { type: "sfx"; name: SfxName }
+  | { type: "music"; name: MusicName }
   | { type: "perfect"; bonus: number };
 
 export type MatchState = {
@@ -61,8 +74,13 @@ export const INTRO_SNIFF = 2.4;
 export const INTRO_ALERT = 0.55;
 export const INTRO_JUMP = 0.45;
 export const INTRO_DURATION = INTRO_SNIFF + INTRO_ALERT + INTRO_JUMP;
-export const DOG_SHOW = 1.6;
-export const BANNER_TIME = 2.2;
+export const START_JINGLE = 6.5;
+export const DOG_SHOW = 2.5;
+export const COUNT_TIME = 1.27;
+export const CLEAR_TIME = 4.51;
+export const PASS_INTERLUDE = COUNT_TIME + CLEAR_TIME;
+export const PERFECT_TIME = 2.45;
+export const FLY_AWAY_TIME = 4.51;
 
 function emptyHits(): boolean[] {
   return Array.from({ length: HIT_SLOTS }, () => false);
@@ -103,7 +121,7 @@ export function enterTitle(m: MatchState): MatchCue[] {
   m.dogPose = null;
   m.dogHold = 0;
   m.awaitingDucks = false;
-  return [{ type: "spawnTitle" }];
+  return [{ type: "spawnTitle" }, { type: "music", name: "title" }];
 }
 
 export function chooseMode(m: MatchState, mode: GameMode): MatchCue[] {
@@ -115,16 +133,22 @@ export function chooseMode(m: MatchState, mode: GameMode): MatchCue[] {
   m.waveIndex = 0;
   m.skyTint = false;
   m.banner = null;
-  startIntro(m);
-  return [];
+  m.phase = "start";
+  m.phaseT = 0;
+  m.dogPose = null;
+  m.dogHold = 0;
+  m.shots = 0;
+  m.awaitingDucks = false;
+  return [{ type: "sfx", name: "start" }];
 }
 
-function startIntro(m: MatchState): void {
+function startIntro(m: MatchState): MatchCue[] {
   m.phase = "intro";
   m.phaseT = 0;
   m.dogPose = "sniff";
   m.dogHold = 0;
   m.shots = 0;
+  return [{ type: "music", name: "dog" }];
 }
 
 export function noteSpawned(m: MatchState): void {
@@ -186,6 +210,7 @@ function beginWave(m: MatchState): MatchCue[] {
   return [
     { type: "spawnWave", count: m.waveQuota },
     { type: "ammo" },
+    { type: "music", name: "duck" },
   ];
 }
 
@@ -197,11 +222,11 @@ function goDog(m: MatchState): MatchCue[] {
   if (m.waveHits > 0) {
     m.dogPose = "got";
     m.dogHold = m.waveHits >= 2 ? 2 : 1;
-    return [{ type: "sfx", name: "got" }];
+    return [{ type: "music", name: "stop" }, { type: "sfx", name: "got" }];
   }
   m.dogPose = "laugh";
   m.dogHold = 0;
-  return [{ type: "sfx", name: "laugh" }];
+  return [{ type: "music", name: "stop" }, { type: "sfx", name: "laugh" }];
 }
 
 function nextRound(m: MatchState): MatchCue[] {
@@ -222,7 +247,7 @@ function endRound(m: MatchState): MatchCue[] {
     m.banner = "GAME OVER";
     m.dogPose = "laugh";
     m.dogHold = 0;
-    return [{ type: "sfx", name: "laugh" }];
+    return [{ type: "music", name: "stop" }, { type: "sfx", name: "gameover" }];
   }
   if (hitCount === HIT_SLOTS) {
     const bonus = perfectBonus(m.round);
@@ -234,11 +259,12 @@ function endRound(m: MatchState): MatchCue[] {
   }
   if (m.round % 10 === 0) {
     m.banner = "GOOD!!";
-    m.phase = "interlude";
-    m.phaseT = 0;
-    return [];
+  } else {
+    m.banner = null;
   }
-  return nextRound(m);
+  m.phase = "interlude";
+  m.phaseT = 0;
+  return [{ type: "sfx", name: "count" }, { type: "sfx", name: "clear" }];
 }
 
 function afterDog(m: MatchState): MatchCue[] {
@@ -248,6 +274,10 @@ function afterDog(m: MatchState): MatchCue[] {
   return beginWave(m);
 }
 
+function interludeHold(m: MatchState): number {
+  return m.banner === "PERFECT" ? PERFECT_TIME : PASS_INTERLUDE;
+}
+
 export function tickMatch(
   m: MatchState,
   dt: number,
@@ -255,6 +285,10 @@ export function tickMatch(
 ): MatchCue[] {
   m.phaseT += dt;
   switch (m.phase) {
+    case "start": {
+      if (m.phaseT >= START_JINGLE) return startIntro(m);
+      return [];
+    }
     case "intro": {
       updateIntroPose(m);
       if (m.phaseT >= INTRO_DURATION) return beginWave(m);
@@ -271,13 +305,17 @@ export function tickMatch(
         m.phaseT = 0;
         if (m.mode === "A") m.skyTint = true;
         m.banner = "FLY AWAY";
-        return [{ type: "startFlyAway" }];
+        return [
+          { type: "startFlyAway" },
+          { type: "music", name: "stop" },
+          { type: "sfx", name: "miss" },
+        ];
       }
       if (!m.awaitingDucks && activeDucks(counts) === 0) return goDog(m);
       return [];
     }
     case "resolve": {
-      if (activeDucks(counts) === 0) return goDog(m);
+      if (activeDucks(counts) === 0 && m.phaseT >= FLY_AWAY_TIME) return goDog(m);
       return [];
     }
     case "dog": {
@@ -285,7 +323,7 @@ export function tickMatch(
       return [];
     }
     case "interlude": {
-      if (m.phaseT >= BANNER_TIME) return nextRound(m);
+      if (m.phaseT >= interludeHold(m)) return nextRound(m);
       return [];
     }
     default:

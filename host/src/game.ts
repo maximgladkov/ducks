@@ -1385,9 +1385,10 @@ export function stepTargets(
   screen: Vec2,
   dt: number,
   mode: GameMode = "A",
-): { next: Target[]; escaped: Target[] } {
+): { next: Target[]; escaped: Target[]; landed: Target[] } {
   const playH = playHOf(screen);
   const escaped: Target[] = [];
+  const landed: Target[] = [];
   const next: Target[] = [];
   for (const src of targets) {
     const t = { ...src, life: src.life + dt };
@@ -1406,6 +1407,7 @@ export function stepTargets(
       t.vx *= 0.98;
       t.x += t.vx * dt * 0.25;
       if (t.y < playH + 40) next.push(t);
+      else landed.push(t);
       continue;
     }
     if (t.escaping) {
@@ -1457,5 +1459,5 @@ export function stepTargets(
     }
     next.push(t);
   }
-  return { next, escaped };
+  return { next, escaped, landed };
 }

@@ -219,11 +219,11 @@ function beginFire(): void {
     return;
   }
   if (shotsRemaining <= 0) {
-    sfx.empty();
-  } else {
-    shotsRemaining -= 1;
-    sfx.shot();
+    sendEvent("trigger_down", eventSeq++);
+    return;
   }
+  shotsRemaining -= 1;
+  sfx.shot();
   sendEvent("trigger_down", eventSeq++);
 }
 

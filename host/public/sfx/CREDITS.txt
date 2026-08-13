@@ -1,9 +1,4 @@
-quack.wav / quack.mp3
-  Source: "Ducks" by DenisChardonnet — BigSoundBank.com
-  License: CC0 (public domain equivalent)
-  https://bigsoundbank.com/ducks-s0276.html
-  Two cries taken from the 22-second recording (at 8.70s and 9.75s) and joined
-  into one call. Each is cut past its slow swell so it starts on the loud part,
-  then high-passed to drop outdoor rumble, dynamically normalised so the whole
-  call is loud rather than just its peak, faded at both ends and limited to
-  -0.5 dBFS.
+Original NES Duck Hunt audio (Nintendo).
+title.mp3, start.mp3, dog.mp3, duck.mp3, got.mp3, clear.mp3,
+perfect.mp3, miss.mp3, gameover.mp3, fall.mp3, land.mp3,
+flap.mp3, gunshot.mp3, laugh.mp3, pause.mp3, count.mp3

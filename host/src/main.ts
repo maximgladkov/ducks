@@ -49,6 +49,7 @@ import {
   canShoot,
   chooseMode,
   consumeShot,
+  COUNT_TIME,
   createMatch,
   enterTitle,
   INTRO_ALERT,
@@ -144,6 +145,7 @@ let fps = 0;
 let frameTime = 0;
 let debugOpen = false;
 let calibratingPlayerId: string | null = null;
+let huntAudioPaused = false;
 let calibSeq = 0;
 let calibCapture: {
   playerId: string;
@@ -264,16 +266,43 @@ function applyCues(cues: MatchCue[]): void {
       targets = markEscaping(targets);
     } else if (cue.type === "ammo") {
       syncAmmo();
+    } else if (cue.type === "music") {
+      if (cue.name === "stop") sfx.stopBgm();
+      else sfx.loop(cue.name);
     } else if (cue.type === "sfx") {
-      if (cue.name === "got") sfx.got();
-      else sfx.laugh();
+      if (cue.name === "start") {
+        sfx.stopBgm();
+        sfx.play("start");
+      } else if (cue.name === "clear") {
+        sfx.play("clear", { at: COUNT_TIME });
+      } else {
+        sfx.play(cue.name);
+      }
     } else if (cue.type === "perfect") {
+      sfx.stopBgm();
+      sfx.play("perfect");
       for (const p of players.values()) p.score += cue.bonus;
     }
   }
   syncHud();
   syncAmmo();
   renderPlayers();
+}
+
+function syncHuntLoops(): void {
+  const flying = match.phase === "wave" && duckCounts(targets).flying > 0;
+  if (flying) sfx.loopSfx("flap");
+  else sfx.stop("flap");
+  if (!flying && match.phase === "wave") sfx.stop("duck");
+}
+
+function restoreHuntMusic(): void {
+  if (match.phase === "title") sfx.loop("title");
+  else if (match.phase === "intro") sfx.loop("dog");
+  else if (match.phase === "wave") {
+    const c = duckCounts(targets);
+    if (c.flying + c.flashing > 0) sfx.loop("duck");
+  }
 }
 
 function paintBanner(): void {
@@ -1014,6 +1043,17 @@ function frame(now: number): void {
   lastFrame = now;
   const paused = calibratingPlayerId !== null;
 
+  if (paused) {
+    if (!huntAudioPaused) {
+      huntAudioPaused = true;
+      sfx.stopAll();
+      sfx.play("pause");
+    }
+  } else if (huntAudioPaused) {
+    huntAudioPaused = false;
+    restoreHuntMusic();
+  }
+
   updateSkyClouds(skyClouds, paused ? 0 : dt);
 
   if (calibCapture) {
@@ -1035,6 +1075,9 @@ function frame(now: number): void {
   if (!paused) {
     if (stationaryMode) {
       const stepped = stepTargets(targets, screenSize(), dt);
+      if (stepped.landed.length) {
+        for (let i = 0; i < stepped.landed.length; i++) sfx.play("land");
+      }
       targets = stepped.next;
       const alive = targets.filter(
         (t) => t.stationary && !t.falling && t.flash <= 0,
@@ -1043,6 +1086,9 @@ function frame(now: number): void {
     } else {
       const huntMode = match.mode ?? "A";
       const stepped = stepTargets(targets, screenSize(), dt, huntMode);
+      if (stepped.landed.length) {
+        for (let i = 0; i < stepped.landed.length; i++) sfx.play("land");
+      }
       for (const left of stepped.escaped) {
         if (left.escaping && !left.tag) recordMiss(match);
       }
@@ -1050,6 +1096,7 @@ function frame(now: number): void {
       const cues = tickMatch(match, dt, duckCounts(targets));
       if (cues.length) applyCues(cues);
       else syncHud();
+      syncHuntLoops();
     }
 
     floatScores = floatScores
@@ -1135,6 +1182,7 @@ function addPlayer(playerId: string): void {
       }
 
       if (match.phase === "gameOver") {
+        sfx.play("gunshot");
         for (const pl of players.values()) pl.score = 0;
         applyCues(enterTitle(match));
         syncAmmo();
@@ -1153,10 +1201,11 @@ function addPlayer(playerId: string): void {
       );
 
       if (match.phase === "title") {
+        sfx.play("gunshot");
         const hit = targets.find((t) => t.id === result.hitId);
         if (hit?.tag === "titleA" || hit?.tag === "titleB") {
           for (const pl of players.values()) pl.score = 0;
-          chooseMode(match, hit.tag === "titleA" ? "A" : "B");
+          applyCues(chooseMode(match, hit.tag === "titleA" ? "A" : "B"));
           targets = [];
           syncHud();
           syncAmmo();
@@ -1166,6 +1215,7 @@ function addPlayer(playerId: string): void {
       }
 
       if (!stationaryMode && !consumeShot(match)) return;
+      sfx.play("gunshot");
       if (stationaryMode) {
         p.shots = Math.max(0, p.shots - 1);
         sendAmmo(p.id);
@@ -1180,8 +1230,7 @@ function addPlayer(playerId: string): void {
           const pts = stationaryMode ? 1000 : duckPoints(match.round, duck.kind);
           if (!stationaryMode) recordHit(match, pts);
           p.score += pts;
-          sfx.duckHit();
-          sfx.fall();
+          sfx.play("fall");
           floatScores.push({ x: duck.x, y: duck.y, text: String(pts), t: 0 });
           targets = targets.map((t) =>
             t.id === hitId ? { ...t, flash: 1, vx: t.vx * 0.2 } : t,

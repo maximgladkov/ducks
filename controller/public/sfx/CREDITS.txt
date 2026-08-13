@@ -1,11 +1,2 @@
-shotgun.wav / shotgun.mp3
-  Source: "Shot of Winchester Magnum XTR" by Joseph Sardin — BigSoundBank.com
-  License: CC0 (public domain equivalent)
-  https://bigsoundbank.com/shot-of-winchester-magnum-xtr-s0397.html
-  Trimmed to the initial shot for gameplay.
-
-empty.wav / empty.mp3
-  Source: "Handgun click" — Mixkit
-  License: Mixkit Stock Sound Effects Free License (commercial use allowed)
-  https://mixkit.co/free-sound-effects/gun/
-  Trimmed to the initial click for dry-fire.
+Original NES Duck Hunt gunshot (Nintendo).
+gunshot.mp3
