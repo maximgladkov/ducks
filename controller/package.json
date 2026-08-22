@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@duckhunt/shared": "*",
-    "gyro-aim": "^0.1.0"
+    "gyro-aim": "^0.1.0",
+    "xstate": "^5.32.5"
   },
   "devDependencies": {
     "typescript": "^5.8.2",

@@ -1,37 +1,20 @@
 import QRCode from "qrcode";
-import { averageVec2 } from "gyro-aim";
-import { type SignallingMessage, type Vec2 } from "@duckhunt/shared";
+import { calibTargets } from "gyro-aim";
+import { type SignallingMessage } from "@duckhunt/shared";
 import {
-  beginCalibration,
-  calibTargets,
-  CALIB_POINT_COUNT,
   CALIB_FULL_COUNT,
+  CALIB_POINT_COUNT,
   CALIB_REFRESH_COUNT,
   applyStoredCalibration,
-  createPlayer,
-  duckCounts,
+  beginCalibration,
   finishCalibration,
-  handlePlayerEvent,
-  ingestSample,
   loadSettings,
-  markEscaping,
-  averageQuats,
-  quatAngularSpread,
-  quatDriftRate,
-  sliceCalibWindow,
   recordCalibCorner,
-  removePlayer,
   sampleCalibQuat,
   samplePlane,
   saveSettings,
-  spawnHuntDuck,
-  spawnStationaryGrid,
-  spawnTitleDucks,
-  stepTargets,
-  updatePlayerFrame,
+  sessionOf,
   type DebugSettings,
-  type PlayerRuntime,
-  type Target,
 } from "./game";
 import { loadStoredCalib, saveStoredCalib } from "./calibStore";
 import {
@@ -41,38 +24,81 @@ import {
 } from "./transport";
 import { sfx } from "./audio";
 import { createHudState, HUD_MAX_SHOTS } from "./hud";
-import { renderHudDom } from "./hudDom";
 import {
+  COUNT_TIME,
   canShoot,
   chooseMode,
   consumeShot,
-  COUNT_TIME,
   createMatch,
   enterTitle,
-  INTRO_ALERT,
-  INTRO_SNIFF,
+  matchContext,
+  matchPhase,
   noteSpawned,
   recordHit,
   recordMiss,
-  sniffProgress,
   tickMatch,
   type MatchCue,
-} from "./match";
-import { WAVE_SHOTS, duckPoints, passLine } from "./rules";
+} from "./machines/match";
+import { createSession, sessionCalibrating, sessionMode } from "./machines/session";
+import {
+  createCalibActor,
+  calibPhase,
+  type CalibActor,
+} from "./machines/calibration";
+import { WAVE_SHOTS, duckPoints } from "./rules";
 import {
   createSkyClouds,
-  drawSkyClouds,
   setCloudScreen,
   updateSkyClouds,
 } from "./clouds";
-import { loadSpriteBank, duckFrame, type SpriteBank } from "./sprites";
-import {
-  drawDog,
-  drawMeadowBack,
-  drawMeadowFg,
-  playfieldHeight,
-} from "./scene";
+import { loadSpriteBank, type SpriteBank } from "./sprites";
 import { diagLog, diagStart, roundAll } from "./diag";
+import { createGameWorld } from "./ecs/world";
+import {
+  Aim,
+  Ammo,
+  Duck,
+  Hunt,
+  Link,
+  Player,
+  Position,
+  Score,
+  Screen,
+  Sensor,
+  Settings,
+  Time,
+} from "./ecs/traits";
+import {
+  clearDucks,
+  despawnPlayer,
+  findDuck,
+  playerEntity,
+  spawnFloatScore,
+  spawnPlayer,
+  spawnStationaryGrid,
+  spawnTitleDucks,
+  spawnWave,
+} from "./ecs/spawn";
+import {
+  aliveStationaryCount,
+  duckCounts,
+  hitDuck,
+  markEscaping,
+  stepDucks,
+} from "./ecs/systems/ducks";
+import { handlePlayerEvent, ingestSample, updateAimFrames } from "./ecs/systems/aim";
+import { stepFloatScores } from "./ecs/systems/scores";
+import { collectPlayerViews, drawFrame } from "./render/draw";
+import {
+  createCalibDom,
+  hideCalibOverlay,
+  initCalibPips,
+  paintCalibHold,
+  setCalibResult,
+  setCalibStatus,
+  showCalibCorner,
+  showCalibSettling,
+} from "./render/calibDom";
 
 const DEBUG_UI =
   import.meta.env.DEV ||
@@ -80,52 +106,50 @@ const DEBUG_UI =
 document.documentElement.classList.toggle("debug-ui", DEBUG_UI);
 
 let sprites: SpriteBank | null = null;
-const match = createMatch();
+const world = createGameWorld();
+const matchActor = createMatch();
+const sessionActor = createSession();
 const hud = createHudState();
 const skyClouds = createSkyClouds(8);
 const skyCanvas = document.getElementById("sky") as HTMLCanvasElement;
 const skyCtx = skyCanvas.getContext("2d")!;
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d", { alpha: true })!;
-const appEl = document.getElementById("app")!;
 const crossLayer = document.getElementById("crosshairs")!;
 const qrCanvas = document.getElementById("qr") as HTMLCanvasElement;
 const joinUrlEl = document.getElementById("join-url")!;
 const playersEl = document.getElementById("players")!;
-const calibOverlay = document.getElementById("calib-overlay")!;
-const calibSpotlight = document.getElementById("calib-spotlight")!;
-const calibTarget = document.getElementById("calib-target")!;
-const calibCountdown = document.getElementById("calib-countdown")!;
-const calibHoldLabel = document.getElementById("calib-hold-label")!;
-const calibCard = document.getElementById("calib-card")!;
-const calibCount = document.getElementById("calib-count")!;
-const calibPips = document.getElementById("calib-pips")!;
-const calibStatus = document.getElementById("calib-status")!;
-const calibResult = document.getElementById("calib-result")!;
 const debugEl = document.getElementById("debug")!;
 const toggleDebug = document.getElementById("toggle-debug")!;
 const gameBanner = document.getElementById("game-banner");
-
-for (let i = 0; i < CALIB_FULL_COUNT; i++) {
-  const pip = document.createElement("div");
-  pip.className = "calib-pip";
-  calibPips.appendChild(pip);
-}
+const calibDom = createCalibDom();
+initCalibPips(calibDom);
 
 let settings = loadSettings();
+world.get(Settings)!.aim = settings;
 diagStart({
   userAgent: navigator.userAgent,
   screen: [window.innerWidth, window.innerHeight],
   devicePixelRatio: window.devicePixelRatio,
   settings,
 });
-const players = new Map<string, PlayerRuntime>();
 const peers = new Map<string, HostPeer>();
-let targets: Target[] = [];
-let stationaryMode = false;
-let targetSeq = 0;
 let sessionId = "";
 let joinUrl = "";
+let lastFrame = performance.now();
+let fps = 0;
+let frameTime = 0;
+let debugOpen = false;
+let huntAudioPaused = false;
+let lagFlashAt: number | null = null;
+let calibActor: CalibActor | null = null;
+let calibBegun = false;
+let appliedLockSeq = -1;
+let lastPromptSeq = -1;
+let lastHoldSec: number | null = null;
+let lastSettleStatusAt = 0;
+let lastRejectKey = "";
+let calibFinished = false;
 
 function sessionIdFromPath(): string | undefined {
   const match = location.pathname.match(/^\/([a-z]{2,4})$/i);
@@ -137,40 +161,12 @@ function rememberHostSession(id: string): void {
   document.cookie = `duckhunt_host=${id}; Path=/; Max-Age=86400; SameSite=Lax${secure}`;
 }
 
-let lastFrame = performance.now();
-let fps = 0;
-let frameTime = 0;
-let debugOpen = false;
-let calibratingPlayerId: string | null = null;
-let huntAudioPaused = false;
-let calibSeq = 0;
-let calibCapture: {
-  playerId: string;
-  samples: Vec2[];
-  quats: import("@duckhunt/shared").Quat[];
-  times: number[];
-  startedAt: number;
-} | null = null;
-const CALIB_SETTLE_MS = 150;
-const CALIB_STABLE_MS = 550;
-const CALIB_HOLD_MS = 3000;
-const CALIB_MIN_HOLD_MS = 400;
-const CALIB_RELEASE_TRIM_MS = 80;
-const CALIB_MIN_SAMPLES = 12;
-const CALIB_MAX_ANGLE_SPREAD = 0.06;
-/**
- * A settled estimate drifts well under a degree per second, while one still
- * walking out a bad seed slides an order of magnitude faster.
- */
-const CALIB_MAX_DRIFT_DEG_PER_SEC = 3;
-const SENSOR_SETTLE_TIMEOUT_MS = 10000;
-let lagFlashAt: number | null = null;
-let lastCalibHoldSec: number | null = null;
-let floatScores: { x: number; y: number; text: string; t: number }[] = [];
-
 function startLagFlash(): void {
   const el = document.getElementById("lag-flash");
-  setCalibResult("Pull the trigger when the screen flashes");
+  setCalibResult(calibDom, "Pull the trigger when the screen flashes", {
+    debug: DEBUG_UI,
+    player: true,
+  });
   window.setTimeout(() => {
     lagFlashAt = performance.now();
     el?.classList.remove("hidden");
@@ -184,13 +180,22 @@ function finishLagFlash(hostNow: number): void {
   lagFlashAt = null;
   const lag = Math.max(0, Math.min(120, delay - 180));
   settings.displayLagMs = Math.round(lag);
-  saveSettings(settings);
+  persistSettings();
   const input = document.getElementById("displayLagMs") as HTMLInputElement | null;
   const label = document.getElementById("v-displayLagMs");
   if (input) input.value = String(settings.displayLagMs);
   if (label) label.textContent = String(settings.displayLagMs);
-  setCalibResult(`Display lag set to ${settings.displayLagMs} ms`);
-  window.setTimeout(() => setCalibResult(null), 4000);
+  setCalibResult(calibDom, `Display lag set to ${settings.displayLagMs} ms`, {
+    debug: DEBUG_UI,
+    player: true,
+  });
+  window.setTimeout(() => setCalibResult(calibDom, null), 4000);
+}
+
+function persistSettings(): void {
+  saveSettings(settings);
+  world.get(Settings)!.aim = settings;
+  diagLog("settings", { ...settings });
 }
 
 function screenSize(): [number, number] {
@@ -214,53 +219,56 @@ function resize(): void {
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
   setCloudScreen(cssW, cssH);
-  if (calibratingPlayerId !== null && !calibTarget.classList.contains("hidden")) {
-    showCalibCorner(calibSeq);
+  world.set(Screen, { w: cssW, h: cssH });
+  if (calibActor && calibPhase(calibActor) === "targeting") {
+    const ctxCalib = calibActor.getSnapshot().context;
+    showCalibCorner(calibDom, ctxCalib.seq, ctxCalib.total, screenSize());
   }
 }
 window.addEventListener("resize", resize);
 resize();
 
-function nextTargetId(): string {
-  return `t${targetSeq++}`;
-}
-
-function syncHud(): void {
-  hud.round = match.round;
-  hud.shots = match.phase === "wave" ? match.shots : WAVE_SHOTS;
-  hud.hits = match.hits;
-  hud.resolved = match.resolved;
-  hud.score = match.score;
-  hud.pass = passLine(match.round);
-}
-
 function ammoForPhase(): number {
-  if (match.phase === "wave") return match.shots;
-  if (match.phase === "title" || match.phase === "gameOver") return WAVE_SHOTS;
+  const phase = matchPhase(matchActor);
+  if (phase === "wave") return matchContext(matchActor).shots;
+  if (phase === "title" || phase === "gameOver") return WAVE_SHOTS;
   return 0;
 }
 
 function syncAmmo(): void {
   const shots = ammoForPhase();
-  for (const p of players.values()) {
-    p.shots = shots;
-    peers.get(p.id)?.send({ type: "ammo", shots });
-  }
+  world.query(Player, Ammo).updateEach(([player, ammo]) => {
+    ammo.shots = shots;
+    peers.get(player.id)?.send({ type: "ammo", shots });
+  });
+}
+
+function renderPlayers(): void {
+  playersEl.innerHTML = collectPlayerViews(world)
+    .map((p) => {
+      const entity = playerEntity(world, p.id);
+      const link = entity?.get(Link);
+      return `<div style="color:${p.color}">● ${p.index + 1}P${DEBUG_UI ? ` · ${link?.transport ?? ""}` : ""} · ${p.shots}/${HUD_MAX_SHOTS} · ${String(p.score).padStart(6, "0")}</div>`;
+    })
+    .join("");
 }
 
 function applyCues(cues: MatchCue[]): void {
+  const hunt = world.get(Hunt)!;
   for (const cue of cues) {
     if (cue.type === "spawnTitle") {
-      targets = spawnTitleDucks(screenSize());
+      spawnTitleDucks(world, screenSize());
     } else if (cue.type === "spawnWave") {
-      const next: Target[] = [];
-      for (let i = 0; i < cue.count; i++) {
-        next.push(spawnHuntDuck(screenSize(), nextTargetId(), match.round, match.mode ?? "A"));
-      }
-      targets = next;
-      noteSpawned(match);
+      spawnWave(
+        world,
+        screenSize(),
+        cue.count,
+        matchContext(matchActor).round,
+        matchContext(matchActor).mode ?? "A",
+      );
+      noteSpawned(matchActor);
     } else if (cue.type === "startFlyAway") {
-      targets = markEscaping(targets);
+      markEscaping(world);
     } else if (cue.type === "ammo") {
       syncAmmo();
     } else if (cue.type === "music") {
@@ -278,525 +286,115 @@ function applyCues(cues: MatchCue[]): void {
     } else if (cue.type === "perfect") {
       sfx.stopBgm();
       sfx.play("perfect");
-      for (const p of players.values()) p.score += cue.bonus;
+      world.query(Score).updateEach(([score]) => {
+        score.value += cue.bonus;
+      });
     }
   }
-  syncHud();
+  hunt.mode = matchContext(matchActor).mode ?? hunt.mode;
   syncAmmo();
   renderPlayers();
 }
 
 function syncHuntLoops(): void {
-  const flying = match.phase === "wave" && duckCounts(targets).flying > 0;
+  const flying =
+    matchPhase(matchActor) === "wave" && duckCounts(world).flying > 0;
   if (flying) sfx.loopSfx("flap");
   else sfx.stop("flap");
-  if (!flying && match.phase === "wave") sfx.stop("duck");
+  if (!flying && matchPhase(matchActor) === "wave") sfx.stop("duck");
 }
 
 function restoreHuntMusic(): void {
-  if (match.phase === "title") sfx.loop("title");
-  else if (match.phase === "intro") sfx.loop("dog");
-  else if (match.phase === "wave") {
-    const c = duckCounts(targets);
+  const phase = matchPhase(matchActor);
+  if (phase === "title") sfx.loop("title");
+  else if (phase === "intro") sfx.loop("dog");
+  else if (phase === "wave") {
+    const c = duckCounts(world);
     if (c.flying + c.flashing > 0) sfx.loop("duck");
   }
 }
 
-function paintBanner(): void {
-  if (!gameBanner) return;
-  if (match.banner) {
-    gameBanner.textContent = match.banner;
-    gameBanner.classList.remove("hidden");
-  } else {
-    gameBanner.textContent = "";
-    gameBanner.classList.add("hidden");
-  }
-}
-
-function renderScoreboard(): void {
-}
-
-function draw(): void {
-  const [w, h] = screenSize();
-  if (!sprites) {
-    skyCtx.fillStyle = "#3CBCFC";
-    skyCtx.fillRect(0, 0, w, h);
-    ctx.clearRect(0, 0, w, h);
-    return;
-  }
-  skyCtx.imageSmoothingEnabled = false;
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, w, h);
-
-  drawMeadowBack(skyCtx, sprites, w, h);
-  drawSkyClouds(skyCtx, sprites, skyClouds);
-
-  const playH = playfieldHeight(h);
-  if (match.skyTint) {
-    skyCtx.fillStyle = "rgba(252, 116, 180, 0.45)";
-    skyCtx.fillRect(0, 0, w, playH);
-  }
-
-  const dogT =
-    match.dogPose === "jump"
-      ? Math.max(0, match.phaseT - INTRO_SNIFF - INTRO_ALERT)
-      : match.phaseT;
-  const dogOpts = { hold: match.dogHold, walk: sniffProgress(match) };
-  if (match.dogPose === "jump") {
-    drawDog(skyCtx, sprites, w, h, "jump", dogT, dogOpts);
-  }
-
-  drawMeadowFg(skyCtx, sprites, w, h);
-  skyCtx.fillStyle = "#6B6B00";
-  skyCtx.fillRect(0, playH, w, h - playH);
-
-  if (match.dogPose === "sniff" || match.dogPose === "alert") {
-    drawDog(skyCtx, sprites, w, h, match.dogPose, dogT, dogOpts);
-  }
-
-  for (const t of targets) {
-    const frame = duckFrame(sprites, t.kind, {
-      vx: t.vx,
-      vy: t.vy,
-      life: t.life,
-      flash: t.flash,
-      falling: t.falling,
-    });
-    const scale = (t.radius * 2.6) / 34;
-    const dw = frame.width * scale;
-    const dh = frame.height * scale;
-    ctx.save();
-    ctx.translate(t.x, t.y);
-    if (!t.falling && t.flash <= 0 && t.vx < 0) ctx.scale(-1, 1);
-    ctx.drawImage(frame, -dw / 2, -dh / 2, dw, dh);
-    ctx.restore();
-  }
-
-  if (match.dogPose === "got" || match.dogPose === "laugh") {
-    drawDog(ctx, sprites, w, h, match.dogPose, dogT, dogOpts);
-  }
-
-  if (match.phase === "title") {
-    const titleSize = Math.max(14, Math.round(w * 0.024));
-    const subSize = Math.max(9, Math.round(w * 0.014));
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    ctx.imageSmoothingEnabled = false;
-    for (const t of targets) {
-      const title = t.tag === "titleA" ? "GAME A" : t.tag === "titleB" ? "GAME B" : null;
-      const sub = t.tag === "titleA" ? "1 DUCK" : t.tag === "titleB" ? "2 DUCKS" : null;
-      if (!title || !sub) continue;
-      const top = t.y + t.radius + 12;
-      ctx.font = `${titleSize}px "Press Start 2P"`;
-      ctx.fillStyle = "#fcfcfc";
-      ctx.fillText(title, t.x, top);
-      ctx.font = `${subSize}px "Press Start 2P"`;
-      ctx.fillStyle = "#fcb400";
-      ctx.fillText(sub, t.x, top + titleSize + 10);
-      ctx.fillStyle = "#bcbcbc";
-      ctx.fillText("3 SHOTS", t.x, top + titleSize + subSize + 20);
-    }
-  }
-
-  ctx.font = `${Math.max(10, Math.round(w * 0.018))}px "Press Start 2P"`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  for (const f of floatScores) {
-    ctx.globalAlpha = Math.max(0, 1 - f.t / 0.9);
-    ctx.fillStyle = "#fcfcfc";
-    ctx.fillText(f.text, f.x, f.y - f.t * 48);
-  }
-  ctx.globalAlpha = 1;
-
-  syncHud();
-  renderHudDom(hud, [...players.values()]);
-}
-
-function renderPlayers(): void {
-  playersEl.innerHTML = [...players.values()]
-    .map(
-      (p) =>
-        `<div style="color:${p.color}">● ${p.index + 1}P${DEBUG_UI ? ` · ${p.transport}` : ""} · ${p.shots}/${HUD_MAX_SHOTS} · ${String(p.score).padStart(6, "0")}</div>`,
-    )
-    .join("");
-}
-
-function setCalibStatus(text: string | null): void {
-  calibStatus.textContent = text ?? "";
-}
-
-function setCalibResult(text: string | null, opts: { player?: boolean } = {}): void {
-  if (text && !DEBUG_UI && !opts.player) {
-    calibResult.classList.add("hidden");
-    calibResult.textContent = "";
-    return;
-  }
-  if (!text) {
-    calibResult.classList.add("hidden");
-    calibResult.textContent = "";
-    return;
-  }
-  calibResult.classList.remove("hidden");
-  calibResult.textContent = text;
-}
-
-function clearCalibPark(): void {
-  calibCard.classList.remove("park-tl", "park-tr", "park-bl", "park-br", "dodge");
-}
-
-function parkCalibCard(x: number, y: number): void {
-  clearCalibPark();
-  const col = x < window.innerWidth / 2 ? "r" : "l";
-  const row = y < window.innerHeight / 2 ? "b" : "t";
-  calibCard.classList.add(`park-${row}${col}`);
-}
-
-function resetCalibHoldUi(): void {
-  lastCalibHoldSec = null;
-  calibTarget.style.setProperty("--hold", "0%");
-  calibCountdown.textContent = "";
-  calibHoldLabel.textContent = "HOLD FIRE";
-}
-
-function paintCalibHold(now: number): void {
-  if (!calibCapture) {
-    resetCalibHoldUi();
-    return;
-  }
-  const held = now - calibCapture.startedAt;
-  const remain = Math.max(0, CALIB_HOLD_MS - held);
-  const progress = Math.max(0, Math.min(1, held / CALIB_HOLD_MS));
-  calibTarget.style.setProperty("--hold", `${Math.round(progress * 100)}%`);
-  const sec = remain > 0 ? Math.ceil(remain / 1000) : 0;
-  if (sec > 0) {
-    calibCountdown.textContent = String(sec);
-    calibHoldLabel.textContent = "KEEP HOLDING";
-    setCalibStatus("Keep holding FIRE still");
-  } else {
-    calibCountdown.textContent = "";
-    calibHoldLabel.textContent = "HOLD STILL";
-    setCalibStatus("Keep holding still until it locks");
-  }
-  if (sec !== lastCalibHoldSec) {
-    lastCalibHoldSec = sec;
-    const peer = peers.get(calibCapture.playerId);
-    peer?.send({
-      type: "status",
-      text:
-        sec > 0
-          ? `HOLD STILL — release in ${sec}`
-          : "HOLD STILL — locking…",
-    });
-  }
-}
-
-function showCalibOverlay(): void {
-  appEl.classList.add("calibrating");
-  calibOverlay.classList.remove("hidden", "targeting");
-  calibTarget.classList.add("hidden");
-  clearCalibPark();
-  resetCalibHoldUi();
-  calibCount.textContent = "";
-  for (const pip of calibPips.children) {
-    pip.classList.remove("on", "done");
-  }
-}
-
-function hideCalibOverlay(): void {
-  appEl.classList.remove("calibrating");
-  calibOverlay.classList.add("hidden");
-  calibOverlay.classList.remove("targeting");
-  calibTarget.classList.add("hidden");
-  clearCalibPark();
-  resetCalibHoldUi();
-  setCalibStatus(null);
-}
-
-function updateCalibPips(seq: number, total: number): void {
-  [...calibPips.children].forEach((pip, i) => {
-    (pip as HTMLElement).style.display = i < total ? "" : "none";
-    pip.classList.toggle("done", i < seq);
-    pip.classList.toggle("on", i === seq && i < total);
-  });
-}
-
-function showCalibCorner(seq: number): void {
-  const p = calibratingPlayerId ? players.get(calibratingPlayerId) : undefined;
-  const total = p?.session.calibTotal ?? CALIB_POINT_COUNT;
-  const c = calibTargets(screenSize())[seq];
-  if (!c) return;
-  calibSeq = seq;
-  appEl.classList.add("calibrating");
-  calibOverlay.classList.remove("hidden");
-  calibOverlay.classList.add("targeting");
-  calibSpotlight.style.setProperty("--calib-x", `${c[0]}px`);
-  calibSpotlight.style.setProperty("--calib-y", `${c[1]}px`);
-  calibTarget.style.left = `${c[0]}px`;
-  calibTarget.style.top = `${c[1]}px`;
-  calibTarget.dataset.v = c[1] < window.innerHeight / 2 ? "top" : "bottom";
-  calibTarget.dataset.h = c[0] < window.innerWidth / 2 ? "left" : "right";
-  calibTarget.classList.remove("hidden");
-  resetCalibHoldUi();
-  calibCount.textContent = `TARGET ${seq + 1} / ${total}`;
-  updateCalibPips(seq, total);
-  parkCalibCard(c[0], c[1]);
-  setCalibStatus("Point at the glowing dot, then hold FIRE");
-}
-
-function hideCalibCorner(): void {
-  hideCalibOverlay();
-}
-
 function sendAmmo(playerId: string): void {
-  const p = players.get(playerId);
   const peer = peers.get(playerId);
-  if (!p || !peer) return;
+  const entity = playerEntity(world, playerId);
+  if (!peer || !entity) return;
   peer.send({ type: "ammo", shots: ammoForPhase() });
 }
 
-/**
- * Calibrating before the phone's attitude estimate has settled bakes the tail of
- * that transient into the reference pose and the first few captures, which is
- * unrecoverable: every later target is measured against a frame that was still
- * moving.
- */
-function waitForSensors(playerId: string, since: number): void {
-  const p = players.get(playerId);
-  const peer = peers.get(playerId);
-  if (!p || !peer) return;
-  const waited = performance.now() - since;
-  if (p.sensorReady || waited > SENSOR_SETTLE_TIMEOUT_MS) {
-    diagLog("sensors_ready", {
-      id: playerId,
-      waitedMs: Math.round(waited),
-      converged: p.sensorReady,
-      tiltDeg: Number(p.sensorTiltDeg.toFixed(2)),
-    });
-    const stored = loadStoredCalib(screenSize());
-    if (stored) {
-      applyStoredCalibration(p, stored);
-      setCalibResult(
-        `Restored aim · ${stored.label} · ±${stored.maxError.toFixed(0)}px — 4-point refresh`,
-      );
-      startCalibration(playerId, {
-        total: CALIB_REFRESH_COUNT,
-        keepMapping: true,
-      });
-      return;
-    }
-    startCalibration(playerId);
-    return;
+function rejectMessage(reason: string, spread?: number, drift?: number): string {
+  if (!DEBUG_UI) {
+    if (reason === "shaky") return "Too shaky — hold still and try again";
+    if (reason === "drift") return "Sensors still settling — hold steady and try again";
+    return "Keep holding FIRE until the countdown ends";
   }
-  showCalibOverlay();
-  setCalibStatus("Hold the phone steady in your aiming grip — sensors settling…");
-  peer.send({
-    type: "status",
-    text: "Hold steady in your aiming grip — settling sensors",
-  });
-  window.setTimeout(() => waitForSensors(playerId, since), 250);
+  if (reason === "shaky") {
+    return `Too shaky (${(((spread ?? 0) * 180) / Math.PI).toFixed(1)}°) — hold still and retry`;
+  }
+  if (reason === "drift") {
+    return `Sensors still settling (${(drift ?? 0).toFixed(1)}°/s) — hold steady and retry`;
+  }
+  return "Keep holding FIRE until the countdown ends";
 }
 
-function startCalibration(
+function beginCalibFlow(
   playerId: string,
-  opts: { total?: number; keepMapping?: boolean } = {},
+  opts: { total?: number; keepMapping?: boolean; settle?: boolean } = {},
 ): void {
-  const p = players.get(playerId);
+  const entity = playerEntity(world, playerId);
   const peer = peers.get(playerId);
-  if (!p || !peer) return;
-  calibratingPlayerId = playerId;
-  calibCapture = null;
-  setCalibResult(null);
-  beginCalibration(p, opts);
-  const total = p.session.calibTotal;
-  diagLog("calib_start", {
-    id: playerId,
-    screen: screenSize(),
-    targets: calibTargets(screenSize()).slice(0, total),
-    refInverse: roundAll(p.session.refInverse),
-    refresh: total < CALIB_POINT_COUNT,
-  });
-  showCalibCorner(0);
-  peer.send({
-    type: "status",
-    text: `Point at each glowing dot and hold FIRE until the countdown ends (${total} targets)`,
-  });
-  peer.send({
-    type: "calib_prompt",
-    seq: 0,
+  if (!entity || !peer) return;
+  calibActor?.stop();
+  sessionActor.send({ type: "CALIB_START", playerId });
+  const settle = opts.settle ?? false;
+  const stored = settle ? loadStoredCalib(screenSize()) : null;
+  const restore = Boolean(stored);
+  const total =
+    opts.total ?? (restore ? CALIB_REFRESH_COUNT : CALIB_POINT_COUNT);
+  const keepMapping = opts.keepMapping ?? restore;
+  if (restore && stored) {
+    applyStoredCalibration(entity, stored);
+    setCalibResult(
+      calibDom,
+      `Restored aim · ${stored.label} · ±${stored.maxError.toFixed(0)}px — 4-point refresh`,
+      { debug: DEBUG_UI },
+    );
+  } else {
+    setCalibResult(calibDom, null);
+  }
+  calibActor = createCalibActor({
+    playerId,
     total,
-    corner: calibTargets(screenSize())[0]!,
+    keepMapping,
+    restore,
+    settle,
+    now: performance.now(),
   });
+  calibBegun = false;
+  appliedLockSeq = -1;
+  lastPromptSeq = -1;
+  lastHoldSec = null;
+  lastSettleStatusAt = 0;
+  lastRejectKey = "";
+  calibFinished = false;
 }
 
-function startCalibCapture(p: PlayerRuntime): void {
-  calibCapture = {
-    playerId: p.id,
-    samples: [],
-    quats: [],
-    times: [],
-    startedAt: performance.now(),
-  };
-  lastCalibHoldSec = null;
-  paintCalibHold(performance.now());
-}
-
-function calibHoldWindow(
-  now: number,
-  kind: "auto" | "release",
-): { quats: import("@duckhunt/shared").Quat[]; planes: Vec2[]; durationMs: number } | null {
-  if (!calibCapture) return null;
-  const settleFrom = calibCapture.startedAt + CALIB_SETTLE_MS;
-  const to = kind === "release" ? now - CALIB_RELEASE_TRIM_MS : now;
-  if (to <= settleFrom) return null;
-  const trailingFrom = Math.max(settleFrom, to - CALIB_STABLE_MS);
-  const trailing = sliceCalibWindow(
-    calibCapture.quats,
-    calibCapture.samples,
-    calibCapture.times,
-    trailingFrom,
-    to,
-  );
-  if (
-    trailing &&
-    trailing.durationMs >= Math.min(CALIB_STABLE_MS, to - settleFrom) * 0.85 &&
-    trailing.quats.length >= CALIB_MIN_SAMPLES
-  ) {
-    return trailing;
-  }
-  return sliceCalibWindow(
-    calibCapture.quats,
-    calibCapture.samples,
-    calibCapture.times,
-    settleFrom,
-    to,
-  );
-}
-
-function completeCalibCapture(
-  p: PlayerRuntime,
-  now: number,
-  kind: "auto" | "release",
-): boolean {
-  const peer = peers.get(p.id);
-  if (!peer || !calibCapture || calibCapture.playerId !== p.id) return false;
-  const heldMs = now - calibCapture.startedAt;
-  if (heldMs < CALIB_HOLD_MS) {
-    if (kind === "auto") return false;
-    calibCapture = null;
-    resetCalibHoldUi();
-    peer.send({
-      type: "status",
-      text: "Keep holding until the countdown ends",
-    });
-    setCalibStatus("Keep holding FIRE until the countdown ends");
-    return false;
-  }
-  const held = calibHoldWindow(now, kind);
-  const minMs = kind === "auto" ? CALIB_STABLE_MS * 0.9 : CALIB_MIN_HOLD_MS;
-  if (
-    !held ||
-    held.durationMs < minMs ||
-    held.quats.length < CALIB_MIN_SAMPLES
-  ) {
-    if (kind === "auto") return false;
-    calibCapture = null;
-    resetCalibHoldUi();
-    peer.send({
-      type: "status",
-      text: "Hold longer — keep FIRE down until the countdown ends",
-    });
-    setCalibStatus("Keep holding FIRE until the countdown ends");
-    return false;
-  }
-  const quats = held.quats;
-  const samples = held.planes;
-  const angleSpread = quatAngularSpread(quats);
-  if (angleSpread > CALIB_MAX_ANGLE_SPREAD) {
-    if (kind === "auto") return false;
-    calibCapture = null;
-    resetCalibHoldUi();
-    peer.send({
-      type: "status",
-      text: DEBUG_UI
-        ? `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`
-        : "Too shaky — hold still and try again",
-    });
-    setCalibStatus(
-      DEBUG_UI
-        ? `Too shaky (${((angleSpread * 180) / Math.PI).toFixed(1)}°) — hold still and retry`
-        : "Too shaky — hold still and try again",
-    );
-    return false;
-  }
-  const driftRate = quatDriftRate(quats, held.durationMs / 1000);
-  if (driftRate > CALIB_MAX_DRIFT_DEG_PER_SEC) {
-    if (kind === "auto") return false;
-    calibCapture = null;
-    resetCalibHoldUi();
-    diagLog("calib_reject", {
-      id: p.id,
-      index: p.session.calibQuats.length,
-      driftDegPerSec: Number(driftRate.toFixed(2)),
-      spreadDeg: Number(((angleSpread * 180) / Math.PI).toFixed(2)),
-    });
-    peer.send({
-      type: "status",
-      text: DEBUG_UI
-        ? `Sensors still settling (${driftRate.toFixed(1)}°/s) — hold steady and retry`
-        : "Sensors still settling — hold steady and try again",
-    });
-    setCalibStatus(
-      DEBUG_UI
-        ? `Sensors still settling (${driftRate.toFixed(1)}°/s drift) — hold steady and retry this target`
-        : "Sensors still settling — hold steady and try again",
-    );
-    return false;
-  }
-  calibCapture = null;
-  const meanPlane = averageVec2(samples);
-  const meanQuat = averageQuats(quats);
-  if (!meanQuat) {
-    peer.send({ type: "status", text: "Bad sample — try again" });
-    return true;
-  }
-  recordCalibCorner(p, meanQuat, meanPlane ?? [0, 0], screenSize());
-  const n = p.session.calibQuats.length;
-  diagLog("calib_capture", {
-    id: p.id,
-    index: n - 1,
-    target: calibTargets(screenSize())[n - 1] ?? null,
-    quat: roundAll(meanQuat),
-    plane: meanPlane ? roundAll(meanPlane) : null,
-    spreadDeg: Number(((angleSpread * 180) / Math.PI).toFixed(2)),
-    samples: quats.length,
-    holdMs: Math.round(held.durationMs),
-    kind,
-    aimPx: roundAll(p.session.aim, 1),
-  });
-  peer.send({
-    type: "status",
-    text: `Target ${n}/${p.session.calibTotal} locked (${((angleSpread * 180) / Math.PI).toFixed(1)}°)`,
-  });
-  if (n < p.session.calibTotal) {
-    showCalibCorner(n);
-    peer.send({
-      type: "calib_prompt",
-      seq: n,
-      total: p.session.calibTotal,
-      corner: calibTargets(screenSize())[n]!,
-    });
-    return true;
-  }
-  const result = finishCalibration(p, screenSize());
-  diagLog("calib_result", { id: p.id, ...result });
-  hideCalibCorner();
-  calibratingPlayerId = null;
-  if (result.ok && p.session.homography) {
+function finishCalibSession(): void {
+  if (!calibActor || calibFinished) return;
+  const ctxCalib = calibActor.getSnapshot().context;
+  const entity = playerEntity(world, ctxCalib.playerId);
+  const peer = peers.get(ctxCalib.playerId);
+  if (!entity || !peer) return;
+  calibFinished = true;
+  const result = finishCalibration(entity, screenSize());
+  const session = sessionOf(entity);
+  diagLog("calib_result", { id: ctxCalib.playerId, ...result });
+  hideCalibOverlay(calibDom);
+  if (result.ok && session.homography) {
     saveStoredCalib({
       screen: screenSize(),
-      H: p.session.homography,
-      muzzle: p.session.aimBasis.muzzle,
-      label: p.session.aimBasis.label,
+      H: session.homography,
+      muzzle: session.aimBasis.muzzle,
+      label: session.aimBasis.label,
       model: result.model ?? "affine",
       maxError: result.errorPx,
       meanError: result.meanError ?? result.errorPx,
@@ -816,35 +414,149 @@ function completeCalibCapture(
         : "Calibration failed — try again",
   });
   peer.send({ type: "ammo", shots: ammoForPhase() });
-  if (result.ok && match.phase === "lobby") {
-    applyCues(enterTitle(match));
+  sessionActor.send({ type: "CALIB_DONE", ok: result.ok });
+  if (result.ok && matchPhase(matchActor) === "lobby") {
+    applyCues(enterTitle(matchActor));
   }
   if (DEBUG_UI) {
     setCalibResult(
+      calibDom,
       result.ok
         ? `Calibration ${quality} · grip: ${result.gripLabel} · held-out accuracy ±${result.errorPx.toFixed(0)}px`
         : result.reason ?? "Calibration failed",
+      { debug: true },
     );
   } else {
     setCalibResult(
+      calibDom,
       result.ok ? "Ready — aim and shoot" : "Calibration failed — try again",
       { player: true },
     );
   }
-  window.setTimeout(() => setCalibResult(null), 5000);
-  return true;
+  window.setTimeout(() => setCalibResult(calibDom, null), 5000);
+  calibActor.stop();
+  calibActor = null;
 }
 
-function onCalibPoint(p: PlayerRuntime, _seq: number): void {
-  if (!p.session.calibrating) return;
-  if (calibCapture) return;
-  startCalibCapture(p);
-}
-
-function onCalibHoldEnd(p: PlayerRuntime): void {
-  if (!p.session.calibrating) return;
-  if (!calibCapture || calibCapture.playerId !== p.id) return;
-  completeCalibCapture(p, performance.now(), "release");
+function tickCalibration(now: number): void {
+  if (!calibActor) return;
+  const ctxCalib = calibActor.getSnapshot().context;
+  const entity = playerEntity(world, ctxCalib.playerId);
+  const peer = peers.get(ctxCalib.playerId);
+  if (!entity || !peer) return;
+  const sensor = entity.get(Sensor);
+  calibActor.send({
+    type: "TICK",
+    now,
+    sensorReady: sensor?.ready ?? false,
+  });
+  const phase = calibPhase(calibActor);
+  const next = calibActor.getSnapshot().context;
+  if (phase === "settling") {
+    showCalibSettling(calibDom);
+    if (now - lastSettleStatusAt > 250) {
+      lastSettleStatusAt = now;
+      peer.send({
+        type: "status",
+        text: "Hold steady in your aiming grip — settling sensors",
+      });
+    }
+    return;
+  }
+  if (!calibBegun) {
+    beginCalibration(entity, {
+      total: next.total,
+      keepMapping: next.keepMapping,
+    });
+    calibBegun = true;
+    diagLog("calib_start", {
+      id: next.playerId,
+      screen: screenSize(),
+      targets: calibTargets(screenSize()).slice(0, next.total),
+      refInverse: roundAll(sessionOf(entity).refInverse),
+      refresh: next.total < CALIB_POINT_COUNT,
+    });
+    peer.send({
+      type: "status",
+      text: `Point at each glowing dot and hold FIRE until the countdown ends (${next.total} targets)`,
+    });
+  }
+  if (phase === "holding" || calibPhase(calibActor) === "targeting") {
+    const plane = samplePlane(entity);
+    const quat = sampleCalibQuat(entity);
+    if (plane && quat && calibPhase(calibActor) === "holding") {
+      calibActor.send({ type: "SAMPLE", plane, quat, now });
+    }
+  }
+  const after = calibActor.getSnapshot();
+  const afterPhase = calibPhase(calibActor);
+  const afterCtx = after.context;
+  if (afterCtx.lockSeq !== appliedLockSeq && afterCtx.lastLock?.ok) {
+    appliedLockSeq = afterCtx.lockSeq;
+    recordCalibCorner(
+      entity,
+      afterCtx.lastLock.quat,
+      afterCtx.lastLock.plane,
+      screenSize(),
+    );
+    const n = sessionOf(entity).calibQuats.length;
+    diagLog("calib_capture", {
+      id: afterCtx.playerId,
+      index: n - 1,
+      target: calibTargets(screenSize())[n - 1] ?? null,
+      quat: roundAll(afterCtx.lastLock.quat),
+      plane: roundAll(afterCtx.lastLock.plane),
+      spreadDeg: Number(((afterCtx.lastLock.spread * 180) / Math.PI).toFixed(2)),
+      samples: afterCtx.lastLock.durationMs,
+      holdMs: Math.round(afterCtx.lastLock.durationMs),
+      kind: afterCtx.kind,
+      aimPx: roundAll(sessionOf(entity).aim, 1),
+    });
+    peer.send({
+      type: "status",
+      text: `Target ${n}/${afterCtx.total} locked (${((afterCtx.lastLock.spread * 180) / Math.PI).toFixed(1)}°)`,
+    });
+  }
+  if (afterPhase === "done") {
+    finishCalibSession();
+    return;
+  }
+  if (afterPhase === "targeting") {
+    showCalibCorner(calibDom, afterCtx.seq, afterCtx.total, screenSize());
+    if (lastPromptSeq !== afterCtx.seq) {
+      lastPromptSeq = afterCtx.seq;
+      const corner = calibTargets(screenSize())[afterCtx.seq];
+      if (corner) {
+        peer.send({
+          type: "calib_prompt",
+          seq: afterCtx.seq,
+          total: afterCtx.total,
+          corner,
+        });
+      }
+    }
+    const verdict = afterCtx.verdict;
+    if (verdict && !verdict.ok) {
+      const text = rejectMessage(
+        verdict.reason,
+        verdict.spread,
+        verdict.drift,
+      );
+      const key = `${afterCtx.seq}:${verdict.reason}`;
+      if (key !== lastRejectKey) {
+        lastRejectKey = key;
+        setCalibStatus(calibDom, text);
+        peer.send({ type: "status", text });
+      }
+    }
+  }
+  if (afterPhase === "holding") {
+    const painted = paintCalibHold(calibDom, afterCtx.capture, now);
+    if (painted && painted.sec !== lastHoldSec) {
+      lastHoldSec = painted.sec;
+      peer.send({ type: "status", text: painted.text });
+    }
+  }
 }
 
 function buildDebugHud(): void {
@@ -902,7 +614,7 @@ function buildDebugHud(): void {
       const n = Number(input.value);
       (settings as Record<string, number | boolean>)[key] = n;
       label.textContent = String(n);
-      saveSettings(settings);
+      persistSettings();
     };
   };
 
@@ -919,7 +631,7 @@ function buildDebugHud(): void {
     input.checked = Boolean(settings[key]);
     input.onchange = () => {
       (settings as Record<string, number | boolean>)[key] = input.checked;
-      saveSettings(settings);
+      persistSettings();
     };
   };
   bindCheck("predictionEnabled");
@@ -932,35 +644,37 @@ function buildDebugHud(): void {
   bindCheck("invertY");
 
   const stationary = document.getElementById("stationaryMode") as HTMLInputElement;
-  stationary.checked = stationaryMode;
+  stationary.checked = sessionMode(sessionActor) === "stationary";
   stationary.onchange = () => {
-    stationaryMode = stationary.checked;
-    if (stationaryMode) {
-      targets = spawnStationaryGrid(screenSize());
-    } else if (match.phase === "title") {
-      applyCues(enterTitle(match));
+    sessionActor.send({ type: "STATIONARY", on: stationary.checked });
+    world.get(Hunt)!.stationary = stationary.checked;
+    if (stationary.checked) {
+      spawnStationaryGrid(world, screenSize());
+    } else if (matchPhase(matchActor) === "title") {
+      applyCues(enterTitle(matchActor));
     } else {
-      targets = [];
+      clearDucks(world);
     }
   };
 
+  const firstId = () =>
+    calibActor?.getSnapshot().context.playerId ??
+    collectPlayerViews(world)[0]?.id;
   document.getElementById("recalibrate")!.onclick = () => {
-    const id = calibratingPlayerId ?? [...players.keys()][0];
-    if (id) startCalibration(id);
+    const id = firstId();
+    if (id) beginCalibFlow(id);
   };
   document.getElementById("refresh-aim")!.onclick = () => {
-    const id = calibratingPlayerId ?? [...players.keys()][0];
-    if (id) {
-      startCalibration(id, { total: CALIB_REFRESH_COUNT, keepMapping: true });
-    }
+    const id = firstId();
+    if (id) beginCalibFlow(id, { total: CALIB_REFRESH_COUNT, keepMapping: true });
   };
   document.getElementById("full-calib")!.onclick = () => {
-    const id = calibratingPlayerId ?? [...players.keys()][0];
-    if (id) startCalibration(id, { total: CALIB_FULL_COUNT });
+    const id = firstId();
+    if (id) beginCalibFlow(id, { total: CALIB_FULL_COUNT });
   };
   document.getElementById("lag-late")!.onclick = () => {
     settings.displayLagMs = Math.min(120, settings.displayLagMs + 8);
-    saveSettings(settings);
+    persistSettings();
     const input = document.getElementById("displayLagMs") as HTMLInputElement | null;
     const label = document.getElementById("v-displayLagMs");
     if (input) input.value = String(settings.displayLagMs);
@@ -968,7 +682,7 @@ function buildDebugHud(): void {
   };
   document.getElementById("lag-early")!.onclick = () => {
     settings.displayLagMs = Math.max(0, settings.displayLagMs - 8);
-    saveSettings(settings);
+    persistSettings();
     const input = document.getElementById("displayLagMs") as HTMLInputElement | null;
     const label = document.getElementById("v-displayLagMs");
     if (input) input.value = String(settings.displayLagMs);
@@ -988,34 +702,39 @@ toggleDebug.onclick = DEBUG_UI
 function updateDebugStats(): void {
   const el = document.getElementById("dbg-stats");
   if (!el) return;
-  const lines = [...players.values()].map((p) => {
-    const peer = peers.get(p.id);
-    const rate = p.packets;
-    const plane = samplePlane(p);
+  const lines: string[] = [];
+  world.query(Player, Aim, Link, Sensor).readEach(([player, aim, link]) => {
+    const peer = peers.get(player.id);
+    const plane = aim.session.samplePlane();
     const planeStr = plane
       ? `plane=(${plane[0].toFixed(3)},${plane[1].toFixed(3)})`
       : "plane=—";
-    const w = p.session.lastSample?.w;
+    const w = aim.session.lastSample?.w;
     const rateDeg = w
       ? ((Math.hypot(w[0], w[1], w[2]) * 180) / Math.PI).toFixed(1)
       : "—";
-    const lock = p.session.stillLock.locked() ? "on" : "off";
-    return `P${p.index + 1} ${p.transport} rtt=${p.rtt.toFixed(1)}ms off=${p.clockOffset.toFixed(1)} age=${p.session.sampleAge.toFixed(1)}ms hor=${p.session.horizonMs.toFixed(0)}ms nq=${p.session.rateQuality.toFixed(2)} ω=${rateDeg}°/s lock=${lock} pkts=${rate} drop~${peer?.dropped ?? 0} ${planeStr}`;
+    const lock = aim.session.stillLock.locked() ? "on" : "off";
+    lines.push(
+      `P${player.index + 1} ${link.transport} rtt=${link.rtt.toFixed(1)}ms off=${link.clockOffset.toFixed(1)} age=${aim.session.sampleAge.toFixed(1)}ms hor=${aim.session.horizonMs.toFixed(0)}ms nq=${aim.session.rateQuality.toFixed(2)} ω=${rateDeg}°/s lock=${lock} pkts=${aim.packets} drop~${peer?.dropped ?? 0} ${planeStr}`,
+    );
   });
   let calibLine = "";
-  if (calibratingPlayerId) {
-    const p = players.get(calibratingPlayerId);
-    const seq = p?.session.calibRays.length ?? 0;
-    const targets = calibTargets(screenSize());
-    const target = targets[Math.min(seq, targets.length - 1)]!;
-    if (p) {
-      const err = Math.hypot(p.session.aim[0] - target[0], p.session.aim[1] - target[1]);
-      calibLine = `<div>calib target ${seq + 1}/${p.session.calibTotal} · crosshair error ${err.toFixed(0)}px · capture ${calibCapture?.samples.length ?? 0}</div>`;
+  if (calibActor) {
+    const c = calibActor.getSnapshot().context;
+    const entity = playerEntity(world, c.playerId);
+    if (entity) {
+      const session = sessionOf(entity);
+      const targets = calibTargets(screenSize());
+      const target = targets[Math.min(c.seq, targets.length - 1)]!;
+      const err = Math.hypot(session.aim[0] - target[0], session.aim[1] - target[1]);
+      calibLine = `<div>calib target ${c.seq + 1}/${c.total} · crosshair error ${err.toFixed(0)}px · capture ${c.capture?.samples.length ?? 0}</div>`;
     }
   } else {
-    const p0 = [...players.values()][0];
-    if (p0?.session.homography) {
-      const bench = p0.session.bench.snapshot();
+    const first = collectPlayerViews(world)[0];
+    const entity = first ? playerEntity(world, first.id) : undefined;
+    const session = entity ? sessionOf(entity) : undefined;
+    if (session?.homography) {
+      const bench = session.bench.snapshot();
       const jitter =
         bench.staticRmsPx != null ? `jitter ${bench.staticRmsPx.toFixed(1)}px` : "";
       const move =
@@ -1026,8 +745,8 @@ function updateDebugStats(): void {
         bench.yawDriftDegPerMin != null
           ? `drift ${bench.yawDriftDegPerMin.toFixed(2)}°/min`
           : "";
-      const warn = p0.session.needsRecal ? " · recalibrate" : "";
-      calibLine = `<div>grip: ${p0.session.gripLabel} · lag ${settings.displayLagMs}ms ${jitter} ${move} ${drift}${warn}</div>`;
+      const warn = session.needsRecal ? " · recalibrate" : "";
+      calibLine = `<div>grip: ${session.gripLabel} · lag ${settings.displayLagMs}ms ${jitter} ${move} ${drift}${warn}</div>`;
     }
   }
   el.innerHTML = `<div>FPS ${fps.toFixed(0)} · frame ${frameTime.toFixed(1)}ms</div>${lines.map((l) => `<div>${l}</div>`).join("")}${calibLine}<div>ghosts: raw / filtered / predicted</div>`;
@@ -1038,7 +757,10 @@ function frame(now: number): void {
   frameTime = now - lastFrame;
   fps = fps * 0.9 + (1000 / Math.max(1, frameTime)) * 0.1;
   lastFrame = now;
-  const paused = calibratingPlayerId !== null;
+  world.set(Time, { dt, now });
+  const [w, h] = screenSize();
+  world.set(Screen, { w, h });
+  const paused = sessionCalibrating(sessionActor);
 
   if (paused) {
     if (!huntAudioPaused) {
@@ -1052,220 +774,206 @@ function frame(now: number): void {
   }
 
   updateSkyClouds(skyClouds, paused ? 0 : dt);
+  tickCalibration(now);
 
-  if (calibCapture) {
-    const p = players.get(calibCapture.playerId);
-    if (p) {
-      const plane = samplePlane(p);
-      const quat = sampleCalibQuat(p);
-      if (plane && quat) {
-        calibCapture.samples.push(plane);
-        calibCapture.quats.push(quat);
-        calibCapture.times.push(now);
-      }
-      if (!completeCalibCapture(p, now, "auto") && calibCapture) {
-        paintCalibHold(now);
-      }
-    }
-  }
-
+  const stationary = sessionMode(sessionActor) === "stationary";
   if (!paused) {
-    if (stationaryMode) {
-      const stepped = stepTargets(targets, screenSize(), dt);
-      if (stepped.landed.length) {
-        for (let i = 0; i < stepped.landed.length; i++) sfx.play("land");
+    if (stationary) {
+      const stepped = stepDucks(world, screenSize(), dt);
+      for (let i = 0; i < stepped.landed; i++) sfx.play("land");
+      if (aliveStationaryCount(world) === 0) {
+        spawnStationaryGrid(world, screenSize());
       }
-      targets = stepped.next;
-      const alive = targets.filter(
-        (t) => t.stationary && !t.falling && t.flash <= 0,
-      );
-      if (alive.length === 0) targets = spawnStationaryGrid(screenSize());
     } else {
-      const huntMode = match.mode ?? "A";
-      const stepped = stepTargets(targets, screenSize(), dt, huntMode);
-      if (stepped.landed.length) {
-        for (let i = 0; i < stepped.landed.length; i++) sfx.play("land");
-      }
+      const huntMode = matchContext(matchActor).mode ?? "A";
+      const stepped = stepDucks(world, screenSize(), dt, huntMode);
+      for (let i = 0; i < stepped.landed; i++) sfx.play("land");
       for (const left of stepped.escaped) {
-        if (left.escaping && !left.tag) recordMiss(match);
+        if (!left.tag) recordMiss(matchActor);
       }
-      targets = stepped.next;
-      const cues = tickMatch(match, dt, duckCounts(targets));
+      const cues = tickMatch(matchActor, dt, duckCounts(world));
       if (cues.length) applyCues(cues);
-      else syncHud();
       syncHuntLoops();
     }
-
-    floatScores = floatScores
-      .map((f) => ({ ...f, t: f.t + dt }))
-      .filter((f) => f.t < 0.9);
+    stepFloatScores(world, dt);
   }
 
-  paintBanner();
-
-  for (const p of players.values()) {
-    updatePlayerFrame(p, settings, screenSize(), targets, dt, DEBUG_UI && debugOpen);
-    if (p.session.needsRecal && !p.session.calibrating && calibratingPlayerId === null) {
-      setCalibResult("Aim drifted — hold two fingers on the phone to recalibrate");
+  updateAimFrames(world, settings, screenSize(), dt, DEBUG_UI && debugOpen);
+  world.query(Player, Aim).readEach(([_player, aim]) => {
+    if (
+      aim.session.needsRecal &&
+      !aim.session.calibrating &&
+      !sessionCalibrating(sessionActor)
+    ) {
+      setCalibResult(
+        calibDom,
+        "Aim drifted — hold two fingers on the phone to recalibrate",
+        { player: true },
+      );
     }
-  }
+  });
 
-  draw();
-  renderScoreboard();
+  drawFrame({
+    sprites,
+    skyCtx,
+    ctx,
+    w,
+    h,
+    clouds: skyClouds,
+    world,
+    match: matchActor,
+    hud,
+    bannerEl: gameBanner,
+  });
   if (debugOpen) updateDebugStats();
   requestAnimationFrame(frame);
 }
 
 function addPlayer(playerId: string): void {
-  if (players.has(playerId)) return;
-  const index = players.size;
-  const p = createPlayer(playerId, index, crossLayer, settings);
-  players.set(playerId, p);
-
+  if (playerEntity(world, playerId)) return;
+  const index = collectPlayerViews(world).length;
+  const entity = spawnPlayer(world, playerId, index, crossLayer, settings);
   const peer = new HostPeer(playerId, send, {
-    onSample: ({ sample }) => ingestSample(p, sample, settings),
+    onSample: ({ sample }) => ingestSample(world, playerId, sample, settings),
     onDiag: ({ diag }) => {
-      p.sensorReady = diag.converged;
-      p.sensorTiltDeg = diag.tiltResidualDeg;
+      const sensor = entity.get(Sensor);
+      if (sensor) {
+        sensor.ready = diag.converged;
+        sensor.tiltDeg = diag.tiltResidualDeg;
+      }
       diagLog("controller", { id: playerId, ...diag });
     },
     onEvent: ({ event }) => {
+      const aim = entity.get(Aim)!;
       diagLog("input", {
         id: playerId,
         event: event.type,
         seq: event.seq,
-        calibrating: p.session.calibrating,
-        aimPx: roundAll(p.session.aim, 1),
+        calibrating: aim.session.calibrating,
+        aimPx: roundAll(aim.session.aim, 1),
       });
       if (event.type === "trigger_down" && lagFlashAt !== null) {
         finishLagFlash(performance.now());
         return;
       }
       if (event.type === "recalibrate") {
-        if (calibratingPlayerId !== null || p.session.calibrating) return;
-        startCalibration(
-          p.id,
-          p.session.homography
+        if (sessionCalibrating(sessionActor) || aim.session.calibrating) return;
+        beginCalibFlow(
+          playerId,
+          aim.session.homography
             ? { total: CALIB_REFRESH_COUNT, keepMapping: true }
             : {},
         );
         return;
       }
-      if (p.session.calibrating) {
-        handlePlayerEvent(
-          p,
-          event,
-          settings,
-          screenSize(),
-          targets,
-          onCalibPoint,
-        );
-        if (event.type === "trigger_up") onCalibHoldEnd(p);
+      if (calibActor && calibActor.getSnapshot().context.playerId === playerId) {
+        if (event.type === "trigger_down") {
+          calibActor.send({ type: "TRIGGER_DOWN" });
+        }
+        if (event.type === "trigger_up") {
+          calibActor.send({ type: "TRIGGER_UP", now: performance.now() });
+        }
         return;
       }
-
-      if (calibratingPlayerId !== null) return;
-
+      if (sessionCalibrating(sessionActor)) return;
       if (event.type !== "trigger_down") {
         handlePlayerEvent(
-          p,
+          world,
+          playerId,
           event,
           settings,
           screenSize(),
-          targets,
-          onCalibPoint,
+          () => undefined,
         );
         return;
       }
-
-      if (match.phase === "gameOver") {
+      if (matchPhase(matchActor) === "gameOver") {
         sfx.play("gunshot");
-        for (const pl of players.values()) pl.score = 0;
-        applyCues(enterTitle(match));
+        world.query(Score).updateEach(([score]) => {
+          score.value = 0;
+        });
+        applyCues(enterTitle(matchActor));
         syncAmmo();
         return;
       }
-
-      if (!stationaryMode && !canShoot(match)) return;
-
+      const stationary = sessionMode(sessionActor) === "stationary";
+      if (!stationary && !canShoot(matchActor)) return;
       const result = handlePlayerEvent(
-        p,
+        world,
+        playerId,
         event,
         settings,
         screenSize(),
-        targets,
-        onCalibPoint,
+        () => undefined,
       );
-
-      if (match.phase === "title") {
+      if (matchPhase(matchActor) === "title") {
         sfx.play("gunshot");
-        const hit = targets.find((t) => t.id === result.hitId);
-        if (hit?.tag === "titleA" || hit?.tag === "titleB") {
-          for (const pl of players.values()) pl.score = 0;
-          applyCues(chooseMode(match, hit.tag === "titleA" ? "A" : "B"));
-          targets = [];
-          syncHud();
+        const found = result.hitId ? findDuck(world, result.hitId) : undefined;
+        const info = found?.get(Duck);
+        if (info?.tag === "titleA" || info?.tag === "titleB") {
+          world.query(Score).updateEach(([score]) => {
+            score.value = 0;
+          });
+          applyCues(chooseMode(matchActor, info.tag === "titleA" ? "A" : "B"));
+          clearDucks(world);
           syncAmmo();
         }
         renderPlayers();
         return;
       }
-
-      if (!stationaryMode && !consumeShot(match)) return;
+      if (!stationary && !consumeShot(matchActor)) return;
       sfx.play("gunshot");
-      if (stationaryMode) {
-        p.shots = Math.max(0, p.shots - 1);
-        sendAmmo(p.id);
+      if (stationary) {
+        const ammo = entity.get(Ammo);
+        if (ammo) ammo.shots = Math.max(0, ammo.shots - 1);
+        sendAmmo(playerId);
       } else {
         syncAmmo();
       }
-
       if (result.hitId) {
-        const hitId = result.hitId;
-        const duck = targets.find((t) => t.id === hitId);
-        if (duck && duck.flash <= 0 && !duck.falling) {
-          const pts = stationaryMode ? 1000 : duckPoints(match.round, duck.kind);
-          if (!stationaryMode) recordHit(match, pts);
-          p.score += pts;
+        const duck = findDuck(world, result.hitId);
+        const duckInfo = duck?.get(Duck);
+        const pos = duck?.get(Position);
+        if (duck && duckInfo && hitDuck(world, result.hitId)) {
+          const pts = stationary
+            ? 1000
+            : duckPoints(matchContext(matchActor).round, duckInfo.kind);
+          if (!stationary) recordHit(matchActor, pts);
+          const score = entity.get(Score);
+          if (score) score.value += pts;
           sfx.play("fall");
-          floatScores.push({ x: duck.x, y: duck.y, text: String(pts), t: 0 });
-          targets = targets.map((t) =>
-            t.id === hitId ? { ...t, flash: 1, vx: t.vx * 0.2 } : t,
-          );
+          if (pos) spawnFloatScore(world, pos.x, pos.y, String(pts));
         }
       }
-      syncHud();
       renderPlayers();
-      renderScoreboard();
     },
     onTransport: (kind) => {
-      p.transport = kind;
+      const link = entity.get(Link);
+      if (link) link.transport = kind;
       renderPlayers();
     },
     onClock: (offset, rtt) => {
-      p.clockOffset = offset;
-      p.session.setClockOffset(offset);
-      p.rtt = rtt;
+      const link = entity.get(Link);
+      const aim = entity.get(Aim);
+      if (link) {
+        link.clockOffset = offset;
+        link.rtt = rtt;
+      }
+      aim?.session.setClockOffset(offset);
     },
   });
   peers.set(playerId, peer);
   void peer.startOffer().then(() => {
-    waitForSensors(playerId, performance.now());
+    beginCalibFlow(playerId, { settle: true });
   });
   renderPlayers();
-  renderScoreboard();
 }
 
 function removePlayerId(playerId: string): void {
-  const p = players.get(playerId);
-  if (p) {
-    removePlayer(p);
-    players.delete(playerId);
-  }
+  despawnPlayer(world, playerId);
   peers.get(playerId)?.close();
   peers.delete(playerId);
   renderPlayers();
-  renderScoreboard();
 }
 
 const sigUrl = defaultSignallingUrl();
@@ -1308,8 +1016,9 @@ const { send } = connectSignalling(sigUrl, (msg: SignallingMessage) => {
     return;
   }
   if (msg.type === "use_ws_fallback") {
-    const p = players.get(msg.playerId);
-    if (p) p.transport = "websocket";
+    const entity = playerEntity(world, msg.playerId);
+    const link = entity?.get(Link);
+    if (link) link.transport = "websocket";
     renderPlayers();
   }
 });
@@ -1346,6 +1055,6 @@ declare global {
   }
 }
 window.duckhuntStartCalib = (playerId?: string) => {
-  const id = playerId ?? [...players.keys()][0];
-  if (id) startCalibration(id);
+  const id = playerId ?? collectPlayerViews(world)[0]?.id;
+  if (id) beginCalibFlow(id);
 };

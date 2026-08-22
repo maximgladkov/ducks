@@ -1,6 +1,6 @@
 import type { SpriteBank } from "./sprites";
 import { PLAY_H, STAGE_H, STAGE_W } from "./rules";
-import type { DogPose } from "./match";
+import type { DogPose } from "./machines/match";
 
 export { STAGE_W, STAGE_H, PLAY_H };
 

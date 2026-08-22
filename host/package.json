@@ -12,7 +12,9 @@
   "dependencies": {
     "@duckhunt/shared": "*",
     "gyro-aim": "^0.1.0",
-    "qrcode": "^1.5.4"
+    "koota": "^0.6.6",
+    "qrcode": "^1.5.4",
+    "xstate": "^5.32.5"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.5",
