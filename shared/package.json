@@ -13,15 +13,12 @@
   },
   "scripts": {
     "build": "tsc -b tsconfig.json --force",
-    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput"
   },
   "devDependencies": {
-    "typescript": "^5.8.2",
-    "vitest": "^3.0.9"
+    "typescript": "^5.8.2"
   },
   "dependencies": {
-    "ml-matrix": "^6.15.0"
+    "gyro-aim": "^0.1.0"
   }
 }

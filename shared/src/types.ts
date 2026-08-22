@@ -1,20 +1,18 @@
-export type Quat = [number, number, number, number];
-export type Vec3 = [number, number, number];
-export type Vec2 = [number, number];
-export type Mat3 = [
-  number, number, number,
-  number, number, number,
-  number, number, number,
-];
+import type {
+  AimDiagnostics,
+  AimSample,
+  Mat3,
+  Quat,
+  Vec2,
+  Vec3,
+} from "gyro-aim";
+
+export type { Mat3, Quat, Vec2, Vec3 };
 
 export type TransportKind = "webrtc" | "websocket";
 
-export type ControllerSample = {
-  t: number;
-  q: Quat;
-  w: Vec3;
-  nq?: number;
-};
+export type ControllerSample = AimSample;
+export type ControllerDiagnostics = AimDiagnostics;
 
 export type ControllerEventType =
   | "trigger_down"
@@ -27,25 +25,6 @@ export type ControllerEvent = {
   t: number;
   type: ControllerEventType;
   seq: number;
-};
-
-export type ControllerDiagnostics = {
-  mode: string;
-  stationary: boolean;
-  biasDegPerSec: number;
-  accelSign: number;
-  screenAngle: number;
-  emitHz: number;
-  /** False while the attitude estimate is still settling; aim is meaningless. */
-  converged: boolean;
-  /** Disagreement between the estimate and its reference, in degrees. */
-  tiltResidualDeg: number;
-  /** Which rotationRate axis labelling the platform turned out to use. */
-  gyroConvention: string;
-  /** 0–1 trust in the fitted rate used for prediction. */
-  rateQuality: number;
-  /** True when a magnetometer attitude is being used as a heading reference. */
-  headingLocked: boolean;
 };
 
 export type ClockPing = {
@@ -137,47 +116,3 @@ export const PLAYER_COLORS = [
 export function colorForPlayer(index: number): string {
   return PLAYER_COLORS[index % PLAYER_COLORS.length]!;
 }
-
-/**
- * Filtering now happens in degrees of aim angle rather than pixels, so
- * `minCutoff` and `beta` are in Hz and Hz-per-deg/s. A 200 deg/s flick raises
- * the cutoff to ~11 Hz, while a steady hold stays at 1 Hz.
- */
-export const DEFAULT_DEBUG_SETTINGS = {
-  minCutoff: 1,
-  // The adaptive cutoff is what trades lag against jitter, so it carries the
-  // responsiveness on its own: high enough to open up as soon as the hand moves.
-  beta: 0.12,
-  displayLagMs: 25,
-  predictionHorizonMs: 0,
-  /**
-   * Off, because latency belongs to prediction, which uses a measured rate.
-   * Leading by the filter's own lag instead overshoots and then unwinds: the lag
-   * peaks just as the hand slows, so the crosshair keeps going, then creeps back
-   * towards the middle for over a second.
-   */
-  filterLeadGain: 0,
-  /**
-   * Generous, because the aim it is helping is only accurate to tens of pixels
-   * and the falloff makes a wide radius unobtrusive.
-   */
-  aimAssistRadius: 90,
-  sensitivity: 900,
-  predictionEnabled: true,
-  filteringEnabled: true,
-  aimAssistEnabled: true,
-  absoluteAiming: true,
-  /** Corrects heading drift from where the player is seen to shoot. */
-  driftLearningEnabled: true,
-  stillLockEnabled: true,
-  invertX: false,
-  invertY: false,
-} as const;
-
-export type DebugSettings = {
-  -readonly [K in keyof typeof DEFAULT_DEBUG_SETTINGS]: (typeof DEFAULT_DEBUG_SETTINGS)[K] extends number
-    ? number
-    : (typeof DEFAULT_DEBUG_SETTINGS)[K] extends boolean
-      ? boolean
-      : (typeof DEFAULT_DEBUG_SETTINGS)[K];
-};

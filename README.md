@@ -87,7 +87,7 @@ Settings persist in `localStorage` key `duckhunt.debug`.
 host/         Desktop game + QR + debug HUD
 controller/   Phone sensor pipe
 signalling/   Session + SDP/ICE + WS relay
-shared/       Types, quaternions, homography, one-euro, clock sync (vitest)
+shared/       Wire protocol types (`AimSample` aliased from `gyro-aim`)
 ```
 
 ## Tests

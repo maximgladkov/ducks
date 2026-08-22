@@ -1,10 +1,6 @@
 import QRCode from "qrcode";
-import {
-  averageVec2,
-  type DebugSettings,
-  type SignallingMessage,
-  type Vec2,
-} from "@duckhunt/shared";
+import { averageVec2 } from "gyro-aim";
+import { type SignallingMessage, type Vec2 } from "@duckhunt/shared";
 import {
   beginCalibration,
   calibTargets,
@@ -33,6 +29,7 @@ import {
   spawnTitleDucks,
   stepTargets,
   updatePlayerFrame,
+  type DebugSettings,
   type PlayerRuntime,
   type Target,
 } from "./game";
@@ -525,7 +522,7 @@ function updateCalibPips(seq: number, total: number): void {
 
 function showCalibCorner(seq: number): void {
   const p = calibratingPlayerId ? players.get(calibratingPlayerId) : undefined;
-  const total = p?.calibTotal ?? CALIB_POINT_COUNT;
+  const total = p?.session.calibTotal ?? CALIB_POINT_COUNT;
   const c = calibTargets(screenSize())[seq];
   if (!c) return;
   calibSeq = seq;
@@ -610,12 +607,12 @@ function startCalibration(
   calibCapture = null;
   setCalibResult(null);
   beginCalibration(p, opts);
-  const total = p.calibTotal;
+  const total = p.session.calibTotal;
   diagLog("calib_start", {
     id: playerId,
     screen: screenSize(),
     targets: calibTargets(screenSize()).slice(0, total),
-    refInverse: roundAll(p.refInverse),
+    refInverse: roundAll(p.session.refInverse),
     refresh: total < CALIB_POINT_COUNT,
   });
   showCalibCorner(0);
@@ -738,7 +735,7 @@ function completeCalibCapture(
     resetCalibHoldUi();
     diagLog("calib_reject", {
       id: p.id,
-      index: p.calibQuats.length,
+      index: p.session.calibQuats.length,
       driftDegPerSec: Number(driftRate.toFixed(2)),
       spreadDeg: Number(((angleSpread * 180) / Math.PI).toFixed(2)),
     });
@@ -763,7 +760,7 @@ function completeCalibCapture(
     return true;
   }
   recordCalibCorner(p, meanQuat, meanPlane ?? [0, 0], screenSize());
-  const n = p.calibQuats.length;
+  const n = p.session.calibQuats.length;
   diagLog("calib_capture", {
     id: p.id,
     index: n - 1,
@@ -774,18 +771,18 @@ function completeCalibCapture(
     samples: quats.length,
     holdMs: Math.round(held.durationMs),
     kind,
-    aimPx: roundAll(p.aim, 1),
+    aimPx: roundAll(p.session.aim, 1),
   });
   peer.send({
     type: "status",
-    text: `Target ${n}/${p.calibTotal} locked (${((angleSpread * 180) / Math.PI).toFixed(1)}°)`,
+    text: `Target ${n}/${p.session.calibTotal} locked (${((angleSpread * 180) / Math.PI).toFixed(1)}°)`,
   });
-  if (n < p.calibTotal) {
+  if (n < p.session.calibTotal) {
     showCalibCorner(n);
     peer.send({
       type: "calib_prompt",
       seq: n,
-      total: p.calibTotal,
+      total: p.session.calibTotal,
       corner: calibTargets(screenSize())[n]!,
     });
     return true;
@@ -794,12 +791,12 @@ function completeCalibCapture(
   diagLog("calib_result", { id: p.id, ...result });
   hideCalibCorner();
   calibratingPlayerId = null;
-  if (result.ok && p.homography) {
+  if (result.ok && p.session.homography) {
     saveStoredCalib({
       screen: screenSize(),
-      H: p.homography,
-      muzzle: p.aimBasis.muzzle,
-      label: p.aimBasis.label,
+      H: p.session.homography,
+      muzzle: p.session.aimBasis.muzzle,
+      label: p.session.aimBasis.label,
       model: result.model ?? "affine",
       maxError: result.errorPx,
       meanError: result.meanError ?? result.errorPx,
@@ -839,13 +836,13 @@ function completeCalibCapture(
 }
 
 function onCalibPoint(p: PlayerRuntime, _seq: number): void {
-  if (!p.calibrating) return;
+  if (!p.session.calibrating) return;
   if (calibCapture) return;
   startCalibCapture(p);
 }
 
 function onCalibHoldEnd(p: PlayerRuntime): void {
-  if (!p.calibrating) return;
+  if (!p.session.calibrating) return;
   if (!calibCapture || calibCapture.playerId !== p.id) return;
   completeCalibCapture(p, performance.now(), "release");
 }
@@ -998,27 +995,27 @@ function updateDebugStats(): void {
     const planeStr = plane
       ? `plane=(${plane[0].toFixed(3)},${plane[1].toFixed(3)})`
       : "plane=—";
-    const w = p.lastSample?.w;
+    const w = p.session.lastSample?.w;
     const rateDeg = w
       ? ((Math.hypot(w[0], w[1], w[2]) * 180) / Math.PI).toFixed(1)
       : "—";
-    const lock = p.stillLock.locked() ? "on" : "off";
-    return `P${p.index + 1} ${p.transport} rtt=${p.rtt.toFixed(1)}ms off=${p.clockOffset.toFixed(1)} age=${p.sampleAge.toFixed(1)}ms hor=${p.horizonMs.toFixed(0)}ms nq=${p.rateQuality.toFixed(2)} ω=${rateDeg}°/s lock=${lock} pkts=${rate} drop~${peer?.dropped ?? 0} ${planeStr}`;
+    const lock = p.session.stillLock.locked() ? "on" : "off";
+    return `P${p.index + 1} ${p.transport} rtt=${p.rtt.toFixed(1)}ms off=${p.clockOffset.toFixed(1)} age=${p.session.sampleAge.toFixed(1)}ms hor=${p.session.horizonMs.toFixed(0)}ms nq=${p.session.rateQuality.toFixed(2)} ω=${rateDeg}°/s lock=${lock} pkts=${rate} drop~${peer?.dropped ?? 0} ${planeStr}`;
   });
   let calibLine = "";
   if (calibratingPlayerId) {
     const p = players.get(calibratingPlayerId);
-    const seq = p?.calibRays.length ?? 0;
+    const seq = p?.session.calibRays.length ?? 0;
     const targets = calibTargets(screenSize());
     const target = targets[Math.min(seq, targets.length - 1)]!;
     if (p) {
-      const err = Math.hypot(p.aim[0] - target[0], p.aim[1] - target[1]);
-      calibLine = `<div>calib target ${seq + 1}/${p.calibTotal} · crosshair error ${err.toFixed(0)}px · capture ${calibCapture?.samples.length ?? 0}</div>`;
+      const err = Math.hypot(p.session.aim[0] - target[0], p.session.aim[1] - target[1]);
+      calibLine = `<div>calib target ${seq + 1}/${p.session.calibTotal} · crosshair error ${err.toFixed(0)}px · capture ${calibCapture?.samples.length ?? 0}</div>`;
     }
   } else {
     const p0 = [...players.values()][0];
-    if (p0?.homography) {
-      const bench = p0.bench.snapshot();
+    if (p0?.session.homography) {
+      const bench = p0.session.bench.snapshot();
       const jitter =
         bench.staticRmsPx != null ? `jitter ${bench.staticRmsPx.toFixed(1)}px` : "";
       const move =
@@ -1029,8 +1026,8 @@ function updateDebugStats(): void {
         bench.yawDriftDegPerMin != null
           ? `drift ${bench.yawDriftDegPerMin.toFixed(2)}°/min`
           : "";
-      const warn = p0.needsRecal ? " · recalibrate" : "";
-      calibLine = `<div>grip: ${p0.gripLabel} · lag ${settings.displayLagMs}ms ${jitter} ${move} ${drift}${warn}</div>`;
+      const warn = p0.session.needsRecal ? " · recalibrate" : "";
+      calibLine = `<div>grip: ${p0.session.gripLabel} · lag ${settings.displayLagMs}ms ${jitter} ${move} ${drift}${warn}</div>`;
     }
   }
   el.innerHTML = `<div>FPS ${fps.toFixed(0)} · frame ${frameTime.toFixed(1)}ms</div>${lines.map((l) => `<div>${l}</div>`).join("")}${calibLine}<div>ghosts: raw / filtered / predicted</div>`;
@@ -1108,7 +1105,7 @@ function frame(now: number): void {
 
   for (const p of players.values()) {
     updatePlayerFrame(p, settings, screenSize(), targets, dt, DEBUG_UI && debugOpen);
-    if (p.needsRecal && !p.calibrating && calibratingPlayerId === null) {
+    if (p.session.needsRecal && !p.session.calibrating && calibratingPlayerId === null) {
       setCalibResult("Aim drifted — hold two fingers on the phone to recalibrate");
     }
   }
@@ -1137,24 +1134,24 @@ function addPlayer(playerId: string): void {
         id: playerId,
         event: event.type,
         seq: event.seq,
-        calibrating: p.calibrating,
-        aimPx: roundAll(p.aim, 1),
+        calibrating: p.session.calibrating,
+        aimPx: roundAll(p.session.aim, 1),
       });
       if (event.type === "trigger_down" && lagFlashAt !== null) {
         finishLagFlash(performance.now());
         return;
       }
       if (event.type === "recalibrate") {
-        if (calibratingPlayerId !== null || p.calibrating) return;
+        if (calibratingPlayerId !== null || p.session.calibrating) return;
         startCalibration(
           p.id,
-          p.homography
+          p.session.homography
             ? { total: CALIB_REFRESH_COUNT, keepMapping: true }
             : {},
         );
         return;
       }
-      if (p.calibrating) {
+      if (p.session.calibrating) {
         handlePlayerEvent(
           p,
           event,
@@ -1247,6 +1244,7 @@ function addPlayer(playerId: string): void {
     },
     onClock: (offset, rtt) => {
       p.clockOffset = offset;
+      p.session.setClockOffset(offset);
       p.rtt = rtt;
     },
   });

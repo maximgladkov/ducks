@@ -4,7 +4,7 @@ import {
   clampToSafeDomain,
   fitPlaneToScreen,
   homographyJacobian,
-} from "../shared/dist/index.js";
+} from "gyro-aim";
 
 const records = readFileSync(process.argv[2] ?? "debug-log.jsonl", "utf8")
   .split("\n")

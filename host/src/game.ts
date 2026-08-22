@@ -1,52 +1,36 @@
 import {
-  AimBench,
-  AngularRateEstimator,
-  DEFAULT_AIM_BASIS,
-  DEFAULT_DEBUG_SETTINGS,
+  AimSession,
+  CALIB_FULL_COUNT,
+  CALIB_POINT_COUNT,
+  CALIB_REFRESH_COUNT,
+  DEFAULT_AIM_SETTINGS,
   MUZZLE_CANDIDATES,
-  OneEuroFilter2D,
-  SAMPLE_HISTORY,
-  StillLock,
-  aimAssistPull,
-  anglesDegToPlane,
   applyHomography,
   applyReferenceFrame,
-  calibrationPoints,
-  clampAim,
-  clampToSafeDomain,
-  colorForPlayer,
+  averageQuats,
+  calibReferencePose,
+  calibTargets,
   crossValidateHomography,
-  detectAimBasis,
   hitscan,
-  learnAimOffset,
-  solveHomography,
-  solveAffine,
-  homographyJacobian,
-  hostTimeFromController,
-  lerp,
   orientationToPlane,
-  planeToAnglesDeg,
-  predictOrientationSafe,
-  predictionHorizonSec,
-  catchUpSec,
-  quatConjugate,
-  quatIdentity,
-  quatMultiply,
-  quatNormalize,
-  quatSlerp,
+  pixelsPerDegree,
+  quatAngularSpread,
+  quatDriftRate,
   referenceFrameForRecentre,
-  sampleAgeMs,
-  sampleAtTime,
-  smoothSampleAgeMs,
+  sliceCalibWindow,
+  solveHomography,
   type AimBasis,
+  type AimSettings,
+  type AimTarget,
+  type Quat,
+  type StoredAimMapping,
+  type Vec2,
+} from "gyro-aim";
+import {
+  colorForPlayer,
   type ControllerEvent,
   type ControllerSample,
-  type DebugSettings,
-  type Mat3,
-  type Quat,
   type TransportKind,
-  type Vec2,
-  type Vec3,
 } from "@duckhunt/shared";
 import { HUD_MAX_SHOTS } from "./hud";
 import { diagEvery, diagLog, round, roundAll } from "./diag";
@@ -59,6 +43,19 @@ import {
   type DuckKind,
   type GameMode,
 } from "./rules";
+
+export type DebugSettings = AimSettings;
+export const DEFAULT_DEBUG_SETTINGS = DEFAULT_AIM_SETTINGS;
+export {
+  CALIB_FULL_COUNT,
+  CALIB_POINT_COUNT,
+  CALIB_REFRESH_COUNT,
+  averageQuats,
+  calibTargets,
+  quatAngularSpread,
+  quatDriftRate,
+  sliceCalibWindow,
+};
 
 export type Target = {
   id: string;
@@ -89,49 +86,15 @@ export type PlayerRuntime = {
   rtt: number;
   packets: number;
   dropped: number;
-  lastSample: ControllerSample | null;
-  prevSample: ControllerSample | null;
-  samples: ControllerSample[];
   lastHostReceive: number;
-  refInverse: Quat;
-  homography: Mat3 | null;
-  aimBasis: AimBasis;
-  relativePos: Vec2;
-  prevQ: Quat | null;
-  filter: OneEuroFilter2D;
-  rateFit: AngularRateEstimator;
-  stillLock: StillLock;
-  bench: AimBench;
-  raw: Vec2;
-  filtered: Vec2;
-  predicted: Vec2;
-  aim: Vec2;
-  clamped: boolean;
-  edge: Vec2;
-  sampleAge: number;
-  horizonMs: number;
-  rateQuality: number;
+  session: AimSession;
   missFlash: number;
   score: number;
   shots: number;
   flightHits: number;
   awaitingDog: boolean;
-  calibRays: Vec2[];
-  calibQuats: Quat[];
-  calibTotal: number;
-  calibFallback: { H: Mat3; basis: AimBasis; label: string } | null;
-  calibrating: boolean;
-  hasRecentered: boolean;
   sensorReady: boolean;
   sensorTiltDeg: number;
-  /** Standing correction for accumulated drift, in plane units. */
-  aimBias: Vec2;
-  /** Shots that have contributed to `aimBias`. */
-  biasShots: number;
-  lastAimPlane: Vec2 | null;
-  missOffsets: Vec2[];
-  needsRecal: boolean;
-  gripLabel: string;
   el: HTMLDivElement;
   wedge: HTMLDivElement;
   ghostRaw: HTMLDivElement;
@@ -139,8 +102,6 @@ export type PlayerRuntime = {
   ghostPred: HTMLDivElement;
 };
 
-// Bumped from v4: filter parameters moved from pixels to degrees of aim angle,
-// so previously stored values mean something entirely different now.
 const SETTINGS_KEY = "duckhunt.debug.v8";
 
 export function loadSettings(): DebugSettings {
@@ -200,50 +161,15 @@ export function createPlayer(
     rtt: 0,
     packets: 0,
     dropped: 0,
-    lastSample: null,
-    prevSample: null,
-    samples: [],
     lastHostReceive: 0,
-    refInverse: quatIdentity(),
-    homography: null,
-    aimBasis: { ...DEFAULT_AIM_BASIS },
-    relativePos: [w / 2, h / 2],
-    prevQ: null,
-    filter: new OneEuroFilter2D({
-      minCutoff: settings.minCutoff,
-      beta: settings.beta,
-    }),
-    rateFit: new AngularRateEstimator(),
-    stillLock: new StillLock(),
-    bench: new AimBench(),
-    raw: [w / 2, h / 2],
-    filtered: [w / 2, h / 2],
-    predicted: [w / 2, h / 2],
-    aim: [w / 2, h / 2],
-    clamped: false,
-    edge: [0, 0],
-    sampleAge: 0,
-    horizonMs: 0,
-    rateQuality: 1,
+    session: new AimSession({ screen: [w, h], settings }),
     missFlash: 0,
     score: 0,
     shots: HUD_MAX_SHOTS,
     flightHits: 0,
     awaitingDog: false,
-    calibRays: [],
-    calibQuats: [],
-    calibTotal: CALIB_POINT_COUNT,
-    calibFallback: null,
-    calibrating: false,
-    hasRecentered: false,
     sensorReady: false,
     sensorTiltDeg: 0,
-    aimBias: [0, 0],
-    biasShots: 0,
-    lastAimPlane: null,
-    missOffsets: [],
-    needsRecal: false,
-    gripLabel: DEFAULT_AIM_BASIS.label,
     el,
     wedge,
     ghostRaw,
@@ -267,52 +193,24 @@ export function removePlayer(p: PlayerRuntime): void {
   p.ghostPred.remove();
 }
 
-export function ingestSample(p: PlayerRuntime, sample: ControllerSample, settings: DebugSettings): void {
-  if (!p.hasRecentered) {
-    p.refInverse = referenceFrameForRecentre(sample.q);
-    p.hasRecentered = true;
-    p.filter.reset();
-  }
-  if (!settings.absoluteAiming && p.lastSample) {
-    const from = orientationToPlane(
-      applyReferenceFrame(p.lastSample.q, p.refInverse),
-      p.aimBasis,
-    );
-    const to = orientationToPlane(
-      applyReferenceFrame(sample.q, p.refInverse),
-      p.aimBasis,
-    );
-    if (from && to) {
-      const dx = to[0] - from[0];
-      const dy = to[1] - from[1];
-      // Converting the plane delta through the calibration Jacobian makes
-      // relative mode inherit the axis orientation and scale that calibration
-      // already established, instead of guessing them separately.
-      let stepX: number;
-      let stepY: number;
-      if (p.homography) {
-        const [dudx, dudy, dvdx, dvdy] = homographyJacobian(p.homography, from);
-        stepX = dudx * dx + dudy * dy;
-        stepY = dvdx * dx + dvdy * dy;
-      } else {
-        stepX = dx * settings.sensitivity;
-        stepY = dy * settings.sensitivity;
-      }
-      const sx = settings.invertX ? -1 : 1;
-      const sy = settings.invertY ? -1 : 1;
-      p.relativePos = [
-        p.relativePos[0] + stepX * sx,
-        p.relativePos[1] + stepY * sy,
-      ];
-    }
-  }
-  p.prevSample = p.lastSample;
-  p.lastSample = sample;
-  p.samples.push(sample);
-  while (p.samples.length > SAMPLE_HISTORY) p.samples.shift();
-  p.rateFit.update(sample.q, sample.t / 1000);
+export function ingestSample(
+  p: PlayerRuntime,
+  sample: ControllerSample,
+  settings: DebugSettings,
+): void {
+  p.session.setSettings(settings);
+  p.session.ingest(sample);
   p.lastHostReceive = performance.now();
   p.packets += 1;
+}
+
+function asAimTargets(targets: Target[]): AimTarget[] {
+  return targets.map((t) => ({
+    id: t.id,
+    x: t.x,
+    y: t.y,
+    radius: t.radius,
+  }));
 }
 
 export function handlePlayerEvent(
@@ -323,20 +221,11 @@ export function handlePlayerEvent(
   targets: Target[],
   onCalibPoint: (p: PlayerRuntime, seq: number) => void,
 ): { hitId: string | null; miss: boolean } {
+  p.session.setSettings(settings);
+  p.session.setScreen(screen);
+
   if (event.type === "recentre") {
-    if (p.lastSample) {
-      p.refInverse = referenceFrameForRecentre(p.lastSample.q);
-      p.hasRecentered = true;
-      // Measured against the old reference, so it means nothing against the new.
-      p.aimBias = [0, 0];
-      p.biasShots = 0;
-    }
-    if (!settings.absoluteAiming) {
-      p.relativePos = [screen[0] / 2, screen[1] / 2];
-    }
-    p.filter.reset();
-    p.stillLock.reset();
-    p.rateFit.reset();
+    p.session.recentre();
     return { hitId: null, miss: false };
   }
 
@@ -346,13 +235,17 @@ export function handlePlayerEvent(
   }
 
   if (event.type === "trigger_down") {
-    if (p.calibrating) {
-      onCalibPoint(p, p.calibRays.length);
+    if (p.session.calibrating) {
+      onCalibPoint(p, p.session.calibRays.length);
       return { hitId: null, miss: false };
     }
-    const fired = aimAtEventTime(p, event.t, settings, screen, targets);
     const hittable = targets.filter(
       (t) => t.flash <= 0 && !t.falling && !t.escaping,
+    );
+    const fired = p.session.aimAt(
+      event.t,
+      performance.now(),
+      asAimTargets(hittable),
     );
     const hitId = hitscan(
       fired,
@@ -364,18 +257,34 @@ export function handlePlayerEvent(
       })),
       settings.aimAssistEnabled ? 10 : 4,
     );
-    const frameDelta = Math.hypot(fired[0] - p.aim[0], fired[1] - p.aim[1]);
+    const frameDelta = Math.hypot(
+      fired[0] - p.session.aim[0],
+      fired[1] - p.session.aim[1],
+    );
     diagLog("trigger", {
       id: p.id,
       eventT: event.t,
       aimPx: roundAll(fired, 1),
-      frameAimPx: roundAll(p.aim, 1),
+      frameAimPx: roundAll(p.session.aim, 1),
       deltaPx: round(frameDelta, 1),
-      sampleAgeMs: round(p.sampleAge, 1),
-      horizonMs: round(p.horizonMs, 1),
+      sampleAgeMs: round(p.session.sampleAge, 1),
+      horizonMs: round(p.session.horizonMs, 1),
     });
-    learnAimBias(p, targets, settings, screen);
-    noteShotOutcome(p, fired, targets, hitId, screen, settings);
+    const next = p.session.learnDrift(asAimTargets(targets));
+    if (next) {
+      diagLog("bias", {
+        id: p.id,
+        shots: p.session.biasShots,
+        biasDeg: roundAll(
+          [
+            (Math.atan(p.session.aimBias[0]) * 180) / Math.PI,
+            (Math.atan(p.session.aimBias[1]) * 180) / Math.PI,
+          ],
+          3,
+        ),
+      });
+    }
+    p.session.noteShot(fired, asAimTargets(targets), hitId);
     if (hitId) {
       return { hitId, miss: false };
     }
@@ -386,193 +295,6 @@ export function handlePlayerEvent(
   return { hitId: null, miss: false };
 }
 
-function aimAtEventTime(
-  p: PlayerRuntime,
-  controllerT: number,
-  settings: DebugSettings,
-  screen: Vec2,
-  targets: Target[],
-): Vec2 {
-  const at = sampleAtTime(p.samples, controllerT);
-  if (!at) return p.aim;
-  const hostNow = performance.now();
-  const age = sampleAgeMs(at.t, p.clockOffset, hostNow);
-  const quality = at.nq;
-  const horizon = settings.predictionEnabled
-    ? predictionHorizonSec({
-        sampleAgeMs: age,
-        displayLagMs: settings.displayLagMs,
-        extraMs: settings.predictionHorizonMs,
-        quality,
-      })
-    : 0;
-  const predicted = predictOrientationSafe(at.q, at.w, horizon);
-  const q = applyReferenceFrame(predicted, p.refInverse);
-  if (!settings.absoluteAiming) return p.aim;
-  const plane = orientationToPlane(q, p.aimBasis);
-  if (!plane) return p.aim;
-  let aim = planeToScreen(plane, p, screen, settings);
-  if (settings.aimAssistEnabled) {
-    aim = aimAssistPull(
-      aim,
-      targets.map((t) => ({ x: t.x, y: t.y, radius: t.radius })),
-      settings.aimAssistRadius,
-    );
-  }
-  const clamped = clampAim(aim[0], aim[1], screen[0], screen[1]);
-  return [clamped.x, clamped.y];
-}
-
-function noteShotOutcome(
-  p: PlayerRuntime,
-  aim: Vec2,
-  targets: Target[],
-  hitId: string | null,
-  screen: Vec2,
-  settings: DebugSettings,
-): void {
-  if (hitId) {
-    p.missOffsets = [];
-    p.needsRecal = false;
-    return;
-  }
-  let nearest: Target | null = null;
-  let nearestD = Infinity;
-  for (const t of targets) {
-    const d = Math.hypot(aim[0] - t.x, aim[1] - t.y);
-    if (d < nearestD) {
-      nearestD = d;
-      nearest = t;
-    }
-  }
-  if (!nearest) return;
-  const offset: Vec2 = [nearest.x - aim[0], nearest.y - aim[1]];
-  p.missOffsets.push(offset);
-  while (p.missOffsets.length > 4) p.missOffsets.shift();
-  if (p.missOffsets.length < 3) return;
-  const mean: Vec2 = [
-    p.missOffsets.reduce((s, o) => s + o[0], 0) / p.missOffsets.length,
-    p.missOffsets.reduce((s, o) => s + o[1], 0) / p.missOffsets.length,
-  ];
-  const meanLen = Math.hypot(mean[0], mean[1]);
-  if (meanLen < 24) return;
-  let aligned = 0;
-  for (const o of p.missOffsets) {
-    const dot = (o[0] * mean[0] + o[1] * mean[1]) / (Math.hypot(o[0], o[1]) * meanLen);
-    if (dot > 0.7) aligned += 1;
-  }
-  if (aligned < p.missOffsets.length) return;
-  if (meanLen > Math.min(screen[0], screen[1]) * 0.18) {
-    p.needsRecal = true;
-    return;
-  }
-  if (!p.homography || !p.lastAimPlane || !settings.driftLearningEnabled) return;
-  const seen: Vec2 = [
-    settings.invertX ? screen[0] - aim[0] : aim[0],
-    settings.invertY ? screen[1] - aim[1] : aim[1],
-  ];
-  const next = learnAimOffset(
-    p.aimBias,
-    seen,
-    [
-      {
-        x: settings.invertX ? screen[0] - nearest.x : nearest.x,
-        y: settings.invertY ? screen[1] - nearest.y : nearest.y,
-        radius: nearest.radius,
-      },
-    ],
-    homographyJacobian(p.homography, p.lastAimPlane),
-    { radiusPx: 280, gain: 0.2 },
-  );
-  if (next) {
-    p.aimBias = next;
-    p.biasShots += 1;
-  }
-}
-
-function orientationForNow(
-  p: PlayerRuntime,
-  settings: DebugSettings,
-): { base: Quat; predicted: Quat } | null {
-  const sample = p.lastSample;
-  if (!sample) return null;
-
-  const hostNow = performance.now();
-  const rawAge = sampleAgeMs(sample.t, p.clockOffset, hostNow);
-  p.sampleAge = smoothSampleAgeMs(p.sampleAge, rawAge);
-  p.rateQuality = sample.nq ?? p.rateFit.quality();
-
-  let q = p.rateFit.poseAt(0) ?? sample.q;
-  let w = p.rateFit.rate();
-  if (p.prevSample) {
-    const span = Math.max(1, sample.t - p.prevSample.t);
-    const alpha = Math.min(
-      1,
-      Math.max(0, (hostNow - hostTimeFromController(p.prevSample.t, p.clockOffset)) / span),
-    );
-    if (alpha < 1) {
-      q = quatSlerp(p.prevSample.q, q, alpha);
-      w = [
-        lerp(p.prevSample.w[0], w[0], alpha),
-        lerp(p.prevSample.w[1], w[1], alpha),
-        lerp(p.prevSample.w[2], w[2], alpha),
-      ];
-    }
-  }
-
-  const base = applyReferenceFrame(q, p.refInverse);
-  const catchUp = catchUpSec(rawAge);
-  const lead = settings.predictionEnabled
-    ? predictionHorizonSec({
-        sampleAgeMs: 0,
-        displayLagMs: settings.displayLagMs,
-        extraMs: settings.predictionHorizonMs,
-        frameMs: 0,
-        quality: p.rateQuality,
-      })
-    : 0;
-  const horizon = catchUp + lead;
-  p.horizonMs = horizon * 1000;
-  if (horizon < 1e-4) {
-    return { base, predicted: base };
-  }
-  const predictedQ = predictOrientationSafe(q, w, horizon, {
-    minSpeed: 0.1,
-    maxDtSec: 0.08,
-  });
-  return {
-    base,
-    predicted: applyReferenceFrame(predictedQ, p.refInverse),
-  };
-}
-
-function planeToScreen(
-  plane: Vec2,
-  p: PlayerRuntime,
-  screen: Vec2,
-  settings: DebugSettings,
-): Vec2 {
-  const corrected: Vec2 = [plane[0] + p.aimBias[0], plane[1] + p.aimBias[1]];
-  const bounded: Vec2 = [
-    Math.max(-3, Math.min(3, corrected[0])),
-    Math.max(-3, Math.min(3, corrected[1])),
-  ];
-  let mapped: Vec2;
-  if (p.homography) {
-    mapped = applyHomography(
-      p.homography,
-      clampToSafeDomain(p.homography, bounded),
-    );
-  } else {
-    const scale = Math.min(screen[0], screen[1]) * 0.55;
-    mapped = [screen[0] / 2 + bounded[0] * scale, screen[1] / 2 + bounded[1] * scale];
-  }
-  return [
-    settings.invertX ? screen[0] - mapped[0] : mapped[0],
-    settings.invertY ? screen[1] - mapped[1] : mapped[1],
-  ];
-}
-
 export function updatePlayerFrame(
   p: PlayerRuntime,
   settings: DebugSettings,
@@ -581,164 +303,144 @@ export function updatePlayerFrame(
   dt: number,
   showGhosts: boolean,
 ): void {
-  p.filter.setParams({ minCutoff: settings.minCutoff, beta: settings.beta });
+  p.session.setSettings(settings);
+  p.session.setScreen(screen);
+  p.session.update(dt, performance.now(), asAimTargets(targets));
+  paintAim(p, dt, showGhosts);
+}
 
-  const oriented = orientationForNow(p, settings);
-  if (!oriented) return;
-  p.prevQ = oriented.base;
+function paintAim(p: PlayerRuntime, dt: number, showGhosts: boolean): void {
+  if (p.missFlash > 0) {
+    p.missFlash = Math.max(0, p.missFlash - dt * 4);
+  }
 
-  if (!settings.absoluteAiming) {
-    p.raw = [...p.relativePos] as Vec2;
-    p.predicted = p.raw;
-    p.filtered = p.raw;
-    finishFrame(p, p.raw, settings, screen, targets, dt, showGhosts);
+  if (p.session.calibrating) {
+    p.el.style.display = "none";
+    p.wedge.style.display = "none";
+    p.ghostRaw.style.display = "none";
+    p.ghostFilt.style.display = "none";
+    p.ghostPred.style.display = "none";
     return;
   }
 
-  const rawPlane = orientationToPlane(oriented.base, p.aimBasis);
-  const predictedPlane = orientationToPlane(oriented.predicted, p.aimBasis);
-  if (!rawPlane || !predictedPlane) return;
-
-  p.raw = planeToScreen(rawPlane, p, screen, settings);
-  p.predicted = planeToScreen(predictedPlane, p, screen, settings);
-
-  // Smoothing happens in degrees of aim angle rather than pixels. Pixels are
-  // stretched unevenly by the homography, which would make the crosshair damp
-  // differently at the edges than in the middle.
-  let aimPlane = predictedPlane;
-  if (settings.filteringEnabled) {
-    const angles = planeToAnglesDeg(predictedPlane);
-    const smoothed = p.filter.filterWithLead(
-      angles[0],
-      angles[1],
-      performance.now() / 1000,
-      settings.filterLeadGain,
-    );
-    aimPlane = anglesDegToPlane(smoothed);
+  p.el.style.display = "block";
+  p.el.style.transform = `translate3d(${p.session.aim[0]}px, ${p.session.aim[1]}px, 0)`;
+  if (p.missFlash > 0) {
+    p.el.classList.add("flash");
+  } else {
+    p.el.classList.remove("flash");
   }
 
-  p.filtered = planeToScreen(aimPlane, p, screen, settings);
-  p.lastAimPlane = aimPlane;
-  logAimFrame(p, rawPlane, predictedPlane, aimPlane, screen);
-  finishFrame(p, p.filtered, settings, screen, targets, dt, showGhosts);
-}
-
-/**
- * Learns a standing aim correction from where the player actually shoots.
- *
- * Heading has nothing to hold it in place: the phone has no compass worth using,
- * so gravity fixes tilt while yaw is free to wander a few tenths of a degree per
- * second, and after a minute the crosshair sits slightly off. There is no sensor
- * that can see this, but the player can, and they reveal it every time they
- * shoot: with one duck plainly under the crosshair, the gap between where they
- * fired and where that duck was is a reading of the accumulated error.
- *
- * Any single reading is mostly the player's own aim, so only a small fraction of
- * each is taken and only when the intended duck is unambiguous. Over a handful of
- * consistent shots the common part -- the drift -- accumulates while the player's
- * scatter cancels out. The total is capped, so even a run of strange shots can
- * only nudge the aim rather than take it over.
- */
-function learnAimBias(
-  p: PlayerRuntime,
-  targets: Target[],
-  settings: DebugSettings,
-  screen: Vec2,
-): void {
-  if (!settings.driftLearningEnabled) return;
-  if (!p.homography || !p.lastAimPlane || p.calibrating) return;
-
-  // The mapping flips the pixel axes after the fact, so the gap has to be read
-  // back through the same flip to mean anything in aim units.
-  const seen: Vec2 = [
-    settings.invertX ? screen[0] - p.filtered[0] : p.filtered[0],
-    settings.invertY ? screen[1] - p.filtered[1] : p.filtered[1],
-  ];
-  const asAimed = targets.map((t) => ({
-    x: settings.invertX ? screen[0] - t.x : t.x,
-    y: settings.invertY ? screen[1] - t.y : t.y,
-    radius: t.radius,
-  }));
-
-  const next = learnAimOffset(
-    p.aimBias,
-    seen,
-    asAimed,
-    homographyJacobian(p.homography, p.lastAimPlane),
-  );
-  if (!next) return;
-  p.aimBias = next;
-  p.biasShots += 1;
-
-  diagLog("bias", {
-    id: p.id,
-    shots: p.biasShots,
-    biasDeg: roundAll(
-      [
-        (Math.atan(p.aimBias[0]) * 180) / Math.PI,
-        (Math.atan(p.aimBias[1]) * 180) / Math.PI,
-      ],
-      3,
-    ),
-  });
-}
-
-/**
- * Screen pixels per degree of aim angle, as the 2x2 matrix
- * [dU/dAngleX, dU/dAngleY; dV/dAngleX, dV/dAngleY]. Plane coordinates are
- * tangents, so the chain rule picks up a sec^2 term away from the centre.
- */
-function pixelsPerDegree(H: Mat3 | null, plane: Vec2, screen: Vec2): number[] {
-  const rad = Math.PI / 180;
-  const sx = (1 + plane[0] * plane[0]) * rad;
-  const sy = (1 + plane[1] * plane[1]) * rad;
-  if (!H) {
-    const scale = Math.min(screen[0], screen[1]) * 0.55;
-    return [scale * sx, 0, 0, scale * sy];
+  if (p.session.clamped) {
+    p.wedge.style.display = "block";
+    const ang =
+      (Math.atan2(p.session.edge[1], p.session.edge[0]) * 180) / Math.PI + 90;
+    p.wedge.style.transform = `translate(9px, -22px) rotate(${ang}deg)`;
+  } else {
+    p.wedge.style.display = "none";
   }
-  const [dudx, dudy, dvdx, dvdy] = homographyJacobian(H, plane);
-  return [dudx * sx, dudy * sy, dvdx * sx, dvdy * sy];
+
+  const display = showGhosts ? "block" : "none";
+  p.ghostRaw.style.display = display;
+  p.ghostFilt.style.display = display;
+  p.ghostPred.style.display = display;
+  p.ghostRaw.style.transform = `translate3d(${p.session.raw[0]}px, ${p.session.raw[1]}px, 0)`;
+  p.ghostFilt.style.transform = `translate3d(${p.session.filtered[0]}px, ${p.session.filtered[1]}px, 0)`;
+  p.ghostPred.style.transform = `translate3d(${p.session.predicted[0]}px, ${p.session.predicted[1]}px, 0)`;
+
+  if (diagEvery(`aim:${p.id}`, 100)) {
+    const sample = p.session.lastSample;
+    const plane = p.session.samplePlane();
+    diagLog("aim", {
+      id: p.id,
+      sensorQ: sample ? roundAll(sample.q) : null,
+      sensorW: sample ? roundAll(sample.w) : null,
+      sampleAgeMs: round(p.session.sampleAge, 1),
+      clockOffset: round(p.session.clockOffset, 1),
+      plane: plane ? roundAll(plane) : null,
+      rawPx: roundAll(p.session.raw, 1),
+      filteredPx: roundAll(p.session.filtered, 1),
+      predictedPx: roundAll(p.session.predicted, 1),
+      horizonMs: round(p.session.horizonMs, 1),
+      rateQuality: round(p.session.rateQuality, 3),
+    });
+  }
+  if (diagEvery(`bench:${p.id}`, 500)) {
+    const snap = p.session.bench.snapshot();
+    diagLog("bench", {
+      id: p.id,
+      staticRmsPx: snap.staticRmsPx != null ? round(snap.staticRmsPx, 2) : null,
+      movingResidualPx:
+        snap.movingResidualPx != null ? round(snap.movingResidualPx, 2) : null,
+      yawDriftDegPerMin:
+        snap.yawDriftDegPerMin != null ? round(snap.yawDriftDegPerMin, 3) : null,
+      sampleAgeMs: round(snap.sampleAgeMs, 1),
+      horizonMs: round(snap.horizonMs, 1),
+      stillLock: p.session.stillLock.locked(),
+    });
+  }
 }
 
-function logAimFrame(
+export function beginCalibration(
   p: PlayerRuntime,
-  rawPlane: Vec2,
-  predictedPlane: Vec2,
-  aimPlane: Vec2,
+  opts: { total?: number; keepMapping?: boolean } = {},
+): void {
+  p.session.beginCalibration(opts);
+}
+
+export function samplePlane(p: PlayerRuntime): Vec2 | null {
+  return p.session.samplePlane();
+}
+
+export function sampleCalibQuat(p: PlayerRuntime): Quat | null {
+  return p.session.sampleCalibQuat();
+}
+
+export function recordCalibCorner(
+  p: PlayerRuntime,
+  quat: Quat,
+  plane: Vec2,
   screen: Vec2,
 ): void {
-  if (!diagEvery(`aim:${p.id}`, 100)) return;
-  const sample = p.lastSample;
-  diagLog("aim", {
-    id: p.id,
-    sensorQ: sample ? roundAll(sample.q) : null,
-    sensorW: sample ? roundAll(sample.w) : null,
-    sampleAgeMs: round(p.sampleAge, 1),
-    clockOffset: round(p.clockOffset, 1),
-    plane: roundAll(rawPlane),
-    predictedPlane: roundAll(predictedPlane),
-    aimPlane: roundAll(aimPlane),
-    anglesDeg: roundAll(planeToAnglesDeg(rawPlane), 3),
-    filteredDeg: roundAll(planeToAnglesDeg(aimPlane), 3),
-    rawPx: roundAll(p.raw, 1),
-    filteredPx: roundAll(p.filtered, 1),
-    predictedPx: roundAll(p.predicted, 1),
-    pxPerDeg: roundAll(pixelsPerDegree(p.homography, rawPlane, screen), 2),
-    horizonMs: round(p.horizonMs, 1),
-    rateQuality: round(p.rateQuality, 3),
-  });
+  p.session.setScreen(screen);
+  p.session.recordPoint(quat, plane);
 }
 
-/**
- * Everything needed to judge a calibration after the fact: how each muzzle
- * candidate scored, what the accepted fit maps to, and the resulting
- * sensitivity, which is what a sluggish or lopsided crosshair shows up in.
- */
+export function finishCalibration(
+  p: PlayerRuntime,
+  screen: Vec2,
+): ReturnType<AimSession["finishCalibration"]> {
+  p.session.setScreen(screen);
+  const needed = p.session.calibTotal;
+  const quats = p.session.calibQuats.slice();
+  const used = calibTargets(screen).slice(0, quats.length);
+  const posed =
+    quats.length >= needed
+      ? quats.map((q) =>
+          applyReferenceFrame(
+            q,
+            referenceFrameForRecentre(calibReferencePose(quats, used, screen)),
+          ),
+        )
+      : [];
+  const result = p.session.finishCalibration();
+  if (posed.length) logCalibrationReport(p, posed, screen, result.ok, quats);
+  return result;
+}
+
+export function applyStoredCalibration(
+  p: PlayerRuntime,
+  stored: StoredAimMapping,
+): void {
+  p.session.applyStoredMapping(stored);
+}
+
 export function logCalibrationReport(
   p: PlayerRuntime,
   recentred: Quat[],
   screen: Vec2,
   accepted: boolean,
+  rawQuats: Quat[] = recentred,
 ): void {
   const targets = calibTargets(screen).slice(0, recentred.length);
   const candidates = MUZZLE_CANDIDATES.map((candidate) => {
@@ -759,496 +461,42 @@ export function logCalibrationReport(
     };
   });
 
-  const chosenPlanes = recentred.map((q) => orientationToPlane(q, p.aimBasis));
+  const chosenPlanes = recentred.map((q) =>
+    orientationToPlane(q, p.session.aimBasis),
+  );
   diagLog("calib_report", {
     id: p.id,
     accepted,
     screen,
-    chosen: p.aimBasis.label,
-    muzzle: p.aimBasis.muzzle,
-    homography: p.homography ? roundAll(p.homography, 6) : null,
+    chosen: p.session.aimBasis.label,
+    muzzle: p.session.aimBasis.muzzle,
+    homography: p.session.homography
+      ? roundAll(p.session.homography, 6)
+      : null,
     targets,
     quats: recentred.map((q) => roundAll(q)),
-    rawQuats: p.calibQuats.map((q) => roundAll(q)),
+    rawQuats: rawQuats.map((q) => roundAll(q)),
     chosenPlanes: chosenPlanes.map((s) => (s ? roundAll(s) : null)),
-    mappedPx: p.homography
+    mappedPx: p.session.homography
       ? chosenPlanes.map((s) =>
-          s ? roundAll(applyHomography(p.homography!, s), 1) : null,
+          s ? roundAll(applyHomography(p.session.homography!, s), 1) : null,
         )
       : null,
-    pxPerDegCentre: roundAll(pixelsPerDegree(p.homography, [0, 0], screen), 2),
+    pxPerDegCentre: roundAll(
+      pixelsPerDegree(p.session.homography, [0, 0], screen),
+      2,
+    ),
     candidates,
   });
-}
-
-function finishFrame(
-  p: PlayerRuntime,
-  point: Vec2,
-  settings: DebugSettings,
-  screen: Vec2,
-  targets: Target[],
-  dt: number,
-  showGhosts: boolean,
-): void {
-  let aim = point;
-  if (settings.aimAssistEnabled) {
-    aim = aimAssistPull(
-      aim,
-      targets.map((t) => ({ x: t.x, y: t.y, radius: t.radius })),
-      settings.aimAssistRadius,
-    );
-  }
-
-  const rate = Math.hypot(
-    p.lastSample?.w[0] ?? 0,
-    p.lastSample?.w[1] ?? 0,
-    p.lastSample?.w[2] ?? 0,
-  );
-  if (settings.stillLockEnabled) {
-    aim = p.stillLock.update(aim, rate, dt);
-  } else {
-    p.stillLock.reset();
-  }
-
-  const clamped = clampAim(aim[0], aim[1], screen[0], screen[1]);
-  p.aim = [clamped.x, clamped.y];
-  p.clamped = clamped.clamped;
-  p.edge = [clamped.nx, clamped.ny];
-
-  const yaw = p.lastAimPlane ? planeToAnglesDeg(p.lastAimPlane)[0] : undefined;
-  p.bench.observe({
-    aim: p.aim,
-    tSec: performance.now() / 1000,
-    rateRad: rate,
-    sampleAgeMs: p.sampleAge,
-    horizonMs: p.horizonMs,
-    yawDeg: yaw,
-  });
-  if (diagEvery(`bench:${p.id}`, 500)) {
-    const snap = p.bench.snapshot();
-    diagLog("bench", {
-      id: p.id,
-      staticRmsPx: snap.staticRmsPx != null ? round(snap.staticRmsPx, 2) : null,
-      movingResidualPx:
-        snap.movingResidualPx != null ? round(snap.movingResidualPx, 2) : null,
-      yawDriftDegPerMin:
-        snap.yawDriftDegPerMin != null ? round(snap.yawDriftDegPerMin, 3) : null,
-      sampleAgeMs: round(snap.sampleAgeMs, 1),
-      horizonMs: round(snap.horizonMs, 1),
-      stillLock: p.stillLock.locked(),
-    });
-  }
-
-  if (p.missFlash > 0) {
-    p.missFlash = Math.max(0, p.missFlash - dt * 4);
-  }
-
-  if (p.calibrating) {
-    p.el.style.display = "none";
-    p.wedge.style.display = "none";
-    p.ghostRaw.style.display = "none";
-    p.ghostFilt.style.display = "none";
-    p.ghostPred.style.display = "none";
-    return;
-  }
-
-  p.el.style.display = "block";
-  p.el.style.transform = `translate3d(${p.aim[0]}px, ${p.aim[1]}px, 0)`;
-  if (p.missFlash > 0) {
-    p.el.classList.add("flash");
-  } else {
-    p.el.classList.remove("flash");
-  }
-
-  if (p.clamped) {
-    p.wedge.style.display = "block";
-    const ang = (Math.atan2(p.edge[1], p.edge[0]) * 180) / Math.PI + 90;
-    p.wedge.style.transform = `translate(9px, -22px) rotate(${ang}deg)`;
-  } else {
-    p.wedge.style.display = "none";
-  }
-
-  const display = showGhosts ? "block" : "none";
-  p.ghostRaw.style.display = display;
-  p.ghostFilt.style.display = display;
-  p.ghostPred.style.display = display;
-  p.ghostRaw.style.transform = `translate3d(${p.raw[0]}px, ${p.raw[1]}px, 0)`;
-  p.ghostFilt.style.transform = `translate3d(${p.filtered[0]}px, ${p.filtered[1]}px, 0)`;
-  p.ghostPred.style.transform = `translate3d(${p.predicted[0]}px, ${p.predicted[1]}px, 0)`;
-}
-
-export function beginCalibration(
-  p: PlayerRuntime,
-  opts: { total?: number; keepMapping?: boolean } = {},
-): void {
-  p.calibrating = true;
-  p.calibRays = [];
-  p.calibQuats = [];
-  p.calibTotal = opts.total ?? CALIB_POINT_COUNT;
-  p.calibFallback =
-    opts.keepMapping && p.homography
-      ? { H: p.homography, basis: { ...p.aimBasis }, label: p.gripLabel }
-      : null;
-  if (!opts.keepMapping) {
-    p.homography = null;
-    p.aimBias = [0, 0];
-    p.biasShots = 0;
-    p.aimBasis = { ...DEFAULT_AIM_BASIS };
-    p.gripLabel = "detecting…";
-  }
-  p.needsRecal = false;
-  if (p.lastSample) {
-    p.refInverse = referenceFrameForRecentre(p.lastSample.q);
-    p.hasRecentered = true;
-  }
-  p.filter.reset();
-  p.stillLock.reset();
-}
-
-export function samplePlane(p: PlayerRuntime): Vec2 | null {
-  if (!p.lastSample) return null;
-  const q = applyReferenceFrame(p.lastSample.q, p.refInverse);
-  return orientationToPlane(q, p.aimBasis);
-}
-
-/**
- * Captures are stored in the raw sensor frame, not the recentred one. The
- * reference pose is only chosen once every target has been captured, so that it
- * can be the centre target's own pose.
- */
-export function sampleCalibQuat(p: PlayerRuntime): Quat | null {
-  return p.lastSample ? p.lastSample.q : null;
-}
-
-export function averageQuats(quats: Quat[]): Quat | null {
-  if (quats.length === 0) return null;
-  let x = 0;
-  let y = 0;
-  let z = 0;
-  let w = 0;
-  const ref = quats[0]!;
-  for (const q of quats) {
-    const sign =
-      q[0] * ref[0] + q[1] * ref[1] + q[2] * ref[2] + q[3] * ref[3] < 0
-        ? -1
-        : 1;
-    x += sign * q[0];
-    y += sign * q[1];
-    z += sign * q[2];
-    w += sign * q[3];
-  }
-  return quatNormalize([x, y, z, w]);
-}
-
-export function sliceCalibWindow(
-  quats: Quat[],
-  planes: Vec2[],
-  times: number[],
-  fromMs: number,
-  toMs: number,
-): { quats: Quat[]; planes: Vec2[]; durationMs: number } | null {
-  if (
-    quats.length === 0 ||
-    quats.length !== times.length ||
-    planes.length !== times.length
-  ) {
-    return null;
-  }
-  const outQ: Quat[] = [];
-  const outP: Vec2[] = [];
-  let t0 = Infinity;
-  let t1 = -Infinity;
-  for (let i = 0; i < times.length; i++) {
-    const t = times[i];
-    if (t < fromMs || t > toMs) continue;
-    outQ.push(quats[i]!);
-    outP.push(planes[i]!);
-    t0 = Math.min(t0, t);
-    t1 = Math.max(t1, t);
-  }
-  if (outQ.length === 0) return null;
-  return { quats: outQ, planes: outP, durationMs: Math.max(0, t1 - t0) };
-}
-
-/**
- * Net rotation rate across a capture window, in deg/s.
- *
- * Spread about the mean cannot tell a steady hand apart from an estimate that is
- * sliding at a constant rate, and a sliding estimate is exactly what makes a
- * capture disagree with the ones around it.
- */
-export function quatDriftRate(quats: Quat[], windowSeconds: number): number {
-  const third = Math.floor(quats.length / 3);
-  if (third < 2 || windowSeconds <= 0) return 0;
-  const first = averageQuats(quats.slice(0, third));
-  const last = averageQuats(quats.slice(-third));
-  if (!first || !last) return 0;
-  const d = quatNormalize(quatMultiply(quatConjugate(first), last));
-  const angle = 2 * Math.acos(Math.min(1, Math.abs(d[3])));
-  const baseline = windowSeconds * (2 / 3);
-  return ((angle * 180) / Math.PI) / baseline;
-}
-
-export function quatAngularSpread(quats: Quat[]): number {
-  const mean = averageQuats(quats);
-  if (!mean || quats.length < 2) return 0;
-  let acc = 0;
-  for (const q of quats) {
-    const d = quatNormalize(quatMultiply(quatConjugate(mean), q));
-    const w = Math.min(1, Math.abs(d[3]));
-    acc += 2 * Math.acos(w);
-  }
-  return acc / quats.length;
-}
-
-export function recordCalibCorner(
-  p: PlayerRuntime,
-  quat: Quat,
-  plane: Vec2,
-  screen: Vec2,
-): void {
-  p.calibQuats.push(quat);
-  p.calibRays.push(plane);
-  refreshProvisionalAim(p, screen);
-}
-
-/** Captures needed before the remaining targets can be aimed at with feedback. */
-const CALIB_PREVIEW_POINTS = 3;
-
-/**
- * Switches aiming onto a mapping fitted from the captures so far, so the player
- * aims the rest of the targets with a crosshair instead of by eye. Pointing a
- * phone at a dot unaided is only good to a few degrees, which is most of the
- * error a rejected calibration reports.
- *
- * The reference pose only rotates the viewing sphere, and on a gnomonic plane
- * that is a projective change the homography absorbs exactly, so referencing an
- * early capture here costs nothing against the final fit.
- */
-function refreshProvisionalAim(p: PlayerRuntime, screen: Vec2): void {
-  if (p.calibQuats.length < CALIB_PREVIEW_POINTS) return;
-  const targets = calibTargets(screen);
-  const basis: AimBasis = { ...DEFAULT_AIM_BASIS };
-  const reference = referenceFrameForRecentre(p.calibQuats[0]!);
-
-  const planes: Vec2[] = [];
-  for (const q of p.calibQuats) {
-    const plane = orientationToPlane(applyReferenceFrame(q, reference), basis);
-    if (!plane) return;
-    planes.push(plane);
-  }
-  const H =
-    planes.length >= 4
-      ? solveHomography(planes, targets.slice(0, planes.length)) ??
-        solveAffine(planes, targets.slice(0, planes.length))
-      : solveAffine(planes, targets.slice(0, planes.length));
-  if (!H) return;
-
-  if (p.calibQuats.length === CALIB_PREVIEW_POINTS) p.filter.reset();
-  p.refInverse = reference;
-  p.hasRecentered = true;
-  p.aimBasis = basis;
-  p.homography = H;
-  p.aimBias = [0, 0];
-  p.biasShots = 0;
-}
-
-export const CALIB_POINT_COUNT = 4;
-export const CALIB_FULL_COUNT = 9;
-export const CALIB_REFRESH_COUNT = 4;
-
-/** Held-out error below which a fit is treated as properly calibrated. */
-const CALIB_GOOD_ERROR_FRACTION = 0.035;
-/**
- * Above this the captures cannot describe one consistent grip and are discarded.
- * Between the two the fit is kept and flagged: it still anchors the crosshair to
- * absolute screen positions, which beats the uncalibrated fallback outright, and
- * recalibrating from it is far easier than starting blind.
- */
-const CALIB_USABLE_ERROR_FRACTION = 0.2;
-
-export function calibTargets(screen: Vec2): Vec2[] {
-  return calibrationPoints(screen[0], screen[1]);
-}
-
-function calibReferencePose(quats: Quat[], targets: Vec2[], screen: Vec2): Quat {
-  const cx = screen[0] / 2;
-  const cy = screen[1] / 2;
-  const near = Math.min(screen[0], screen[1]) * 0.12;
-  let best = 0;
-  let bestD = Infinity;
-  for (let i = 0; i < targets.length; i++) {
-    const d = Math.hypot(targets[i]![0] - cx, targets[i]![1] - cy);
-    if (d < bestD) {
-      bestD = d;
-      best = i;
-    }
-  }
-  if (bestD <= near && quats[best]) return quats[best]!;
-  return averageQuats(quats) ?? quats[0]!;
-}
-
-export function finishCalibration(
-  p: PlayerRuntime,
-  screen: Vec2,
-): {
-  ok: boolean;
-  reason?: string;
-  /** Accepted, but loose enough to be worth redoing. */
-  rough?: boolean;
-  /** Leave-one-out aim error in pixels. */
-  errorPx: number;
-  meanError?: number;
-  worstIndex: number;
-  gripLabel?: string;
-  /** Which mapping won on held-out error. */
-  model?: string;
-} {
-  const targets = calibTargets(screen);
-  const used = targets.slice(0, p.calibQuats.length);
-  const needed = p.calibTotal;
-  const previous = p.calibFallback;
-  if (p.calibQuats.length < needed) {
-    return {
-      ok: false,
-      reason: `Need ${needed} points`,
-      errorPx: Infinity,
-      worstIndex: p.calibQuats.length,
-    };
-  }
-  // The centre target is captured last, and referencing every capture to that
-  // pose puts the screen centre at plane (0,0). Plane coordinates then stay
-  // small and symmetric instead of running out towards the 90-degree
-  // singularity, and a later recentre lands the crosshair mid-screen, which is
-  // what the homography already maps plane (0,0) to.
-  const reference = referenceFrameForRecentre(
-    calibReferencePose(p.calibQuats, used, screen),
-  );
-  const recentred = p.calibQuats.map((q) => applyReferenceFrame(q, reference));
-
-  const fit = detectAimBasis(recentred, used);
-  if (!fit) {
-    logCalibrationReport(p, recentred, screen, false);
-    p.calibRays = [];
-    p.calibQuats = [];
-    if (previous) {
-      p.homography = previous.H;
-      p.aimBasis = previous.basis;
-      p.gripLabel = previous.label;
-    }
-    return {
-      ok: false,
-      reason: "Could not fit a mapping — hold one consistent grip and redo",
-      errorPx: Infinity,
-      worstIndex: 0,
-    };
-  }
-
-  const worstIndex = worstCalibPoint(recentred, fit.basis, used, fit.model);
-  const diagonal = Math.hypot(screen[0], screen[1]);
-  if (fit.maxError > diagonal * CALIB_USABLE_ERROR_FRACTION) {
-    p.aimBasis = fit.basis;
-    p.homography = fit.H;
-    logCalibrationReport(p, recentred, screen, false);
-    if (previous) {
-      p.homography = previous.H;
-      p.aimBasis = previous.basis;
-      p.gripLabel = previous.label;
-    } else {
-      p.homography = null;
-      p.aimBasis = { ...DEFAULT_AIM_BASIS };
-    }
-    p.calibRays = [];
-    p.calibQuats = [];
-    return {
-      ok: false,
-      reason: `Aim was inconsistent (off by ${fit.maxError.toFixed(0)}px at target ${worstIndex + 1}) — redo`,
-      errorPx: fit.maxError,
-      worstIndex,
-    };
-  }
-  const rough = fit.maxError > diagonal * CALIB_GOOD_ERROR_FRACTION;
-
-  p.refInverse = reference;
-  p.hasRecentered = true;
-  p.aimBasis = fit.basis;
-  p.gripLabel = fit.basis.label;
-  p.homography = fit.H;
-  p.aimBias = [0, 0];
-  p.biasShots = 0;
-  p.calibrating = false;
-  p.needsRecal = false;
-  p.filter.reset();
-  p.stillLock.reset();
-  logCalibrationReport(p, recentred, screen, true);
-  return {
-    ok: true,
-    rough,
-    errorPx: fit.maxError,
-    meanError: fit.meanError,
-    worstIndex,
-    gripLabel: fit.basis.label,
-    model: fit.model,
-  };
-}
-
-export function applyStoredCalibration(
-  p: PlayerRuntime,
-  stored: {
-    H: Mat3;
-    muzzle: Vec3;
-    label: string;
-  },
-): void {
-  p.aimBasis = { muzzle: stored.muzzle, label: stored.label };
-  p.gripLabel = stored.label;
-  p.homography = stored.H;
-  p.aimBias = [0, 0];
-  p.biasShots = 0;
-  p.needsRecal = false;
-  p.calibrating = false;
-  if (p.lastSample) {
-    p.refInverse = referenceFrameForRecentre(p.lastSample.q);
-    p.hasRecentered = true;
-  }
-  p.filter.reset();
-  p.stillLock.reset();
-}
-
-function worstCalibPoint(
-  quats: Quat[],
-  basis: AimBasis,
-  targets: Vec2[],
-  model: string,
-): number {
-  const planes = quats.map((q) => orientationToPlane(q, basis));
-  if (planes.some((plane) => !plane)) return 0;
-  const src = planes as Vec2[];
-  const solve = model === "affine" ? solveAffine : solveHomography;
-  const minTrain = model === "affine" ? 3 : 4;
-  if (src.length < minTrain + 1) return 0;
-  let worst = 0;
-  let worstErr = -1;
-  for (let i = 0; i < targets.length; i++) {
-    const trainSrc = src.filter((_, j) => j !== i);
-    const trainDst = targets.filter((_, j) => j !== i);
-    const H = solve(trainSrc, trainDst);
-    if (!H) continue;
-    const mapped = applyHomography(H, src[i]!);
-    const err = Math.hypot(mapped[0] - targets[i]![0], mapped[1] - targets[i]![1]);
-    if (err > worstErr) {
-      worstErr = err;
-      worst = i;
-    }
-  }
-  return worst;
 }
 
 function playHOf(screen: Vec2): number {
   return screen[1] * (PLAY_H / STAGE_H);
 }
 
-function blankTarget(partial: Partial<Target> & Pick<Target, "id" | "x" | "y" | "kind">): Target {
+function blankTarget(
+  partial: Partial<Target> & Pick<Target, "id" | "x" | "y" | "kind">,
+): Target {
   return {
     radius: 24,
     vx: 0,
@@ -1434,7 +682,8 @@ export function stepTargets(
       const twitch = t.kind === "brown" ? 1.5 : t.kind === "blue" ? 1.1 : 0.75;
       const turnMul = mode === "B" ? 1.7 : 1;
       const spread = mode === "B" ? 0.7 : 1.05;
-      const heading = Math.atan2(t.vy, t.vx) + (Math.random() - 0.5) * Math.PI * spread;
+      const heading =
+        Math.atan2(t.vy, t.vx) + (Math.random() - 0.5) * Math.PI * spread;
       t.vx = Math.cos(heading) * speed;
       t.vy = Math.sin(heading) * speed;
       t.turnIn = ((0.7 + Math.random() * 1.4) / twitch) * turnMul;

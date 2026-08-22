@@ -9,7 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@duckhunt/shared": "*"
+    "@duckhunt/shared": "*",
+    "gyro-aim": "^0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.8.2",

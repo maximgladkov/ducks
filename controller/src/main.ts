@@ -131,12 +131,15 @@ ws.addEventListener("close", () => {
   window.setTimeout(() => location.reload(), 1200);
 });
 
-const motion = new MotionPipeline({
-  onSample: (q, w, t, nq) => {
-    if (!armed) return;
-    session.sendSample({ t, q, w, nq });
+const motion = new MotionPipeline(
+  {
+    onSample: (sample) => {
+      if (!armed) return;
+      session.sendSample(sample);
+    },
   },
-});
+  { biasStorageKey: "duckhunt.gyroBias.v1" },
+);
 
 window.setInterval(() => {
   if (!armed) return;

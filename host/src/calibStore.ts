@@ -1,4 +1,4 @@
-import type { AimBasis, Mat3, Vec2, Vec3 } from "@duckhunt/shared";
+import type { AimBasis, Mat3, Vec2, Vec3 } from "gyro-aim";
 
 export type StoredCalib = {
   screen: Vec2;

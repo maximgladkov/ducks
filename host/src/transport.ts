@@ -8,7 +8,7 @@ import {
   clockOffsetFromExchange,
   estimateClockOffset,
   type ClockSample,
-} from "@duckhunt/shared";
+} from "gyro-aim";
 
 export type PeerHandlers = {
   onSample?: (payload: Extract<ControllerToHostPayload, { kind: "sample" }>) => void;
