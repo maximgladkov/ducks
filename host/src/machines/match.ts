@@ -47,7 +47,8 @@ export type MatchCue =
   | { type: "ammo" }
   | { type: "sfx"; name: SfxName }
   | { type: "music"; name: MusicName }
-  | { type: "perfect"; bonus: number };
+  | { type: "perfect"; bonus: number }
+  | { type: "roundSplash" };
 
 export type MatchContext = {
   mode: GameMode | null;
@@ -57,6 +58,7 @@ export type MatchContext = {
   hits: boolean[];
   resolved: number;
   score: number;
+  roundStartScore: number;
   waveHits: number;
   waveMisses: number;
   waveQuota: number;
@@ -78,7 +80,8 @@ export type MatchEvent =
   | { type: "SHOT" }
   | { type: "HIT"; points: number }
   | { type: "MISS" }
-  | { type: "NOTE_SPAWNED" };
+  | { type: "NOTE_SPAWNED" }
+  | { type: "CONTINUE" };
 
 export const INTRO_SNIFF = 2.4;
 export const INTRO_ALERT = 0.55;
@@ -120,6 +123,7 @@ const initialContext: MatchContext = {
   hits: emptyHits(),
   resolved: 0,
   score: 0,
+  roundStartScore: 0,
   waveHits: 0,
   waveMisses: 0,
   waveQuota: 1,
@@ -166,10 +170,6 @@ export const matchMachine = setup({
       context.hits.filter(Boolean).length < passLine(context.round),
     isPerfect: ({ context }) =>
       context.hits.filter(Boolean).length === HIT_SLOTS,
-    interludeDone: ({ context, event }) => {
-      const hold = context.banner === "PERFECT" ? PERFECT_TIME : PASS_INTERLUDE;
-      return context.phaseT + tickDt(event) >= hold;
-    },
     canSpendShot: ({ context }) => context.shots > 0,
   },
   actions: {
@@ -201,6 +201,7 @@ export const matchMachine = setup({
       mode: ({ event }) => (event.type === "CHOOSE_MODE" ? event.mode : null),
       round: 1,
       score: 0,
+      roundStartScore: 0,
       hits: () => emptyHits(),
       resolved: 0,
       waveIndex: 0,
@@ -286,7 +287,10 @@ export const matchMachine = setup({
       banner: "PERFECT",
       phaseT: 0,
       emitted: ({ context }) =>
-        [{ type: "perfect", bonus: perfectBonus(context.round) }] as MatchCue[],
+        [
+          { type: "perfect", bonus: perfectBonus(context.round) },
+          { type: "roundSplash" },
+        ] as MatchCue[],
     }),
     setPassInterlude: assign({
       banner: ({ context }) => (context.round % 10 === 0 ? "GOOD!!" : null),
@@ -294,10 +298,12 @@ export const matchMachine = setup({
       emitted: [
         { type: "sfx", name: "count" },
         { type: "sfx", name: "clear" },
+        { type: "roundSplash" },
       ] as MatchCue[],
     }),
     nextRound: assign({
       round: ({ context }) => context.round + 1,
+      roundStartScore: ({ context }) => context.score,
       hits: () => emptyHits(),
       resolved: 0,
       waveIndex: 0,
@@ -444,14 +450,8 @@ export const matchMachine = setup({
     },
     interlude: {
       on: {
-        TICK: [
-          {
-            guard: "interludeDone",
-            target: "wave",
-            actions: ["nextRound", "beginWave"],
-          },
-          { actions: "addPhaseT" },
-        ],
+        CONTINUE: { target: "wave", actions: ["nextRound", "beginWave"] },
+        TICK: { actions: "addPhaseT" },
       },
     },
     gameOver: {
@@ -501,6 +501,11 @@ export function tickMatch(
 
 export function noteSpawned(actor: MatchActor): void {
   actor.send({ type: "NOTE_SPAWNED" });
+}
+
+export function continueMatch(actor: MatchActor): MatchCue[] {
+  actor.send({ type: "CONTINUE" });
+  return actor.getSnapshot().context.emitted;
 }
 
 export function canShoot(actor: MatchActor): boolean {

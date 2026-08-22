@@ -29,6 +29,7 @@ import {
   canShoot,
   chooseMode,
   consumeShot,
+  continueMatch,
   createMatch,
   enterTitle,
   matchContext,
@@ -45,7 +46,7 @@ import {
   calibPhase,
   type CalibActor,
 } from "./machines/calibration";
-import { WAVE_SHOTS, duckPoints } from "./rules";
+import { WAVE_SHOTS, duckPoints, HIT_SLOTS } from "./rules";
 import {
   createSkyClouds,
   setCloudScreen,
@@ -99,6 +100,21 @@ import {
   showCalibCorner,
   showCalibSettling,
 } from "./render/calibDom";
+import {
+  bindRoundSplash,
+  captureRoundSplashCard,
+  hideRoundSplash,
+  isRoundSplashHowTo,
+  isRoundSplashSharing,
+  markRoundSplashShared,
+  paintRoundSplashHover,
+  roundSplashCardEl,
+  roundSplashContains,
+  roundSplashContinueContains,
+  setRoundSplashSharing,
+  showRoundSplash,
+  type RoundSplashRecap,
+} from "./render/roundSplash";
 
 const DEBUG_UI =
   import.meta.env.DEV ||
@@ -134,6 +150,7 @@ diagStart({
   settings,
 });
 const peers = new Map<string, HostPeer>();
+const roundStartScores = new Map<string, number>();
 let sessionId = "";
 let joinUrl = "";
 let lastFrame = performance.now();
@@ -253,12 +270,69 @@ function renderPlayers(): void {
     .join("");
 }
 
+function snapshotRoundStartScores(): void {
+  roundStartScores.clear();
+  world.query(Player, Score).readEach(([player, score]) => {
+    roundStartScores.set(player.id, score.value);
+  });
+}
+
+function buildRoundRecap(): RoundSplashRecap {
+  const ctx = matchContext(matchActor);
+  const hitCount = ctx.hits.filter(Boolean).length;
+  const title =
+    ctx.banner === "PERFECT" || ctx.banner === "GOOD!!"
+      ? ctx.banner
+      : `ROUND ${ctx.round}`;
+  const views = collectPlayerViews(world);
+  return {
+    round: ctx.round,
+    title,
+    hits: ctx.hits,
+    hitCount,
+    total: HIT_SLOTS,
+    score: ctx.score,
+    delta: ctx.score - ctx.roundStartScore,
+    players: views.map((p) => ({
+      id: p.id,
+      index: p.index,
+      color: p.color,
+      score: p.score,
+      delta: p.score - (roundStartScores.get(p.id) ?? 0),
+    })),
+  };
+}
+
+function continueFromSplash(): void {
+  if (matchPhase(matchActor) !== "interlude") return;
+  applyCues(continueMatch(matchActor));
+  snapshotRoundStartScores();
+}
+
+async function shareRoundCard(_card: HTMLElement): Promise<void> {
+  if (isRoundSplashSharing()) return;
+  setRoundSplashSharing(true);
+  try {
+    const payload = await captureRoundSplashCard();
+    if (!payload) return;
+    const msg = { type: "share_card" as const, mime: payload.mime, data: payload.data };
+    for (const peer of peers.values()) peer.send(msg);
+    markRoundSplashShared();
+  } catch (err) {
+    console.error(err);
+  } finally {
+    setRoundSplashSharing(false);
+  }
+}
+
 function applyCues(cues: MatchCue[]): void {
   const hunt = world.get(Hunt)!;
   for (const cue of cues) {
     if (cue.type === "spawnTitle") {
+      hideRoundSplash();
       spawnTitleDucks(world, screenSize());
     } else if (cue.type === "spawnWave") {
+      hideRoundSplash();
       spawnWave(
         world,
         screenSize(),
@@ -289,6 +363,8 @@ function applyCues(cues: MatchCue[]): void {
       world.query(Score).updateEach(([score]) => {
         score.value += cue.bonus;
       });
+    } else if (cue.type === "roundSplash") {
+      showRoundSplash(buildRoundRecap(), sprites);
     }
   }
   hunt.mode = matchContext(matchActor).mode ?? hunt.mode;
@@ -799,6 +875,15 @@ function frame(now: number): void {
   }
 
   updateAimFrames(world, settings, screenSize(), dt, DEBUG_UI && debugOpen);
+  if (matchPhase(matchActor) === "interlude") {
+    const pts: [number, number][] = [];
+    world.query(Player, Aim).readEach(([_player, aim]) => {
+      pts.push([aim.session.aim[0], aim.session.aim[1]]);
+    });
+    paintRoundSplashHover(pts);
+  } else {
+    paintRoundSplashHover([]);
+  }
   world.query(Player, Aim).readEach(([_player, aim]) => {
     if (
       aim.session.needsRecal &&
@@ -887,6 +972,21 @@ function addPlayer(playerId: string): void {
         );
         return;
       }
+      if (matchPhase(matchActor) === "interlude") {
+        const fired = aim.session.aimAt(event.t, performance.now(), []);
+        sfx.play("gunshot");
+        if (roundSplashContains(fired[0], fired[1])) {
+          if (!isRoundSplashHowTo()) {
+            const card = roundSplashCardEl();
+            if (card) void shareRoundCard(card);
+          }
+          return;
+        }
+        if (roundSplashContinueContains(fired[0], fired[1])) {
+          continueFromSplash();
+        }
+        return;
+      }
       if (matchPhase(matchActor) === "gameOver") {
         sfx.play("gunshot");
         world.query(Score).updateEach(([score]) => {
@@ -915,6 +1015,7 @@ function addPlayer(playerId: string): void {
             score.value = 0;
           });
           applyCues(chooseMode(matchActor, info.tag === "titleA" ? "A" : "B"));
+          snapshotRoundStartScores();
           clearDucks(world);
           syncAmmo();
         }
@@ -1037,6 +1138,11 @@ async function enableTvSound(): Promise<void> {
 void enableTvSound();
 window.addEventListener("pointerdown", () => void enableTvSound());
 window.addEventListener("keydown", () => void enableTvSound());
+
+bindRoundSplash({
+  onShare: (card) => void shareRoundCard(card),
+  onContinue: () => continueFromSplash(),
+});
 
 void loadSpriteBank()
   .then((bank) => {

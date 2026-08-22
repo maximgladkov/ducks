@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>DUCK HUNT</title>
+    <title>DUCKS GAME</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -19,14 +19,13 @@
       <div id="overlay">
         <div id="qr-panel">
           <div class="pixel-label">PLAYER</div>
-          <h1>DUCK HUNT</h1>
+          <h1>DUCKS GAME</h1>
           <p>SCAN TO JOIN ZAPPER</p>
           <canvas id="qr"></canvas>
           <div id="join-url"></div>
           <div id="players"></div>
         </div>
         <div id="calib-result" class="hidden"></div>
-        <div id="scoreboard" class="hidden"></div>
       </div>
       <canvas id="game"></canvas>
       <div id="game-hud" aria-label="Game status">
@@ -114,6 +113,12 @@
       </div>
       <div id="play-hint">HOLD TWO FINGERS ON THE PHONE TO RECALIBRATE</div>
       <div id="game-banner" class="hidden"></div>
+      <div id="round-splash" class="hidden">
+        <div id="round-splash-card">
+          <canvas id="round-splash-scene" width="512" height="512"></canvas>
+        </div>
+        <button type="button" id="round-splash-continue">CONTINUE</button>
+      </div>
       <div id="debug" class="hidden"></div>
       <div id="lag-flash" class="hidden"></div>
       <button id="toggle-debug" type="button">DBG</button>

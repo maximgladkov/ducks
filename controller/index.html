@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="screen-orientation" content="portrait" />
-    <title>DUCK HUNT ZAPPER</title>
+    <title>DUCKS GAME</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -20,7 +20,7 @@
   </head>
   <body>
     <div id="app">
-      <div class="brand">DUCK HUNT</div>
+      <div class="brand">DUCKS GAME</div>
       <div id="status">Connecting…</div>
       <div id="warn" class="hidden"></div>
       <button id="trigger" type="button" data-state="idle" draggable="false">
@@ -28,6 +28,13 @@
       </button>
       <div id="hint">Hold two fingers to recalibrate</div>
       <div id="rotate">TURN PHONE UPRIGHT</div>
+      <div id="share-card" class="hidden">
+        <img id="share-card-img" alt="Round recap" />
+        <div id="share-card-help">TAP THE BLUE BUTTON, THEN PICK AN APP</div>
+        <a id="share-card-site" href="https://ducks.game">TRY IT ON DUCKS.GAME</a>
+        <button type="button" id="share-card-send">TAP TO SHARE</button>
+        <button type="button" id="share-card-dismiss">CLOSE</button>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

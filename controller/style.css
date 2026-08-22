@@ -152,3 +152,76 @@ body {
 .hidden {
   display: none !important;
 }
+
+#share-card {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: max(16px, env(safe-area-inset-top))
+    max(16px, env(safe-area-inset-right))
+    max(16px, env(safe-area-inset-bottom))
+    max(16px, env(safe-area-inset-left));
+  background: #000000f2;
+  pointer-events: auto;
+  touch-action: manipulation;
+}
+
+#share-card-img {
+  width: min(100%, 420px);
+  aspect-ratio: 1 / 1;
+  height: auto;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #000;
+}
+
+#share-card-help,
+#share-card-site {
+  text-align: center;
+  line-height: 1.6;
+  text-shadow: 2px 2px 0 #000;
+}
+
+#share-card-help {
+  font-size: 8px;
+  color: var(--white);
+  max-width: 280px;
+}
+
+#share-card-site {
+  font-size: 10px;
+  color: var(--yellow);
+  letter-spacing: 0.08em;
+  text-decoration: none;
+}
+
+#share-card-send,
+#share-card-dismiss {
+  font-family: inherit;
+  letter-spacing: 0.08em;
+  border: 3px solid #000;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+#share-card-send {
+  font-size: 12px;
+  padding: 12px 16px;
+  color: var(--white);
+  background: var(--blue);
+  box-shadow: inset -3px -3px 0 #003888;
+}
+
+#share-card-dismiss {
+  font-size: 8px;
+  padding: 8px 12px;
+  color: var(--muted);
+  background: #000;
+  box-shadow: inset -3px -3px 0 #333;
+}

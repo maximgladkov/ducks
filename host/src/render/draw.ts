@@ -169,5 +169,5 @@ export function drawFrame(opts: {
 
   hudFromMatch(match, hud);
   renderHudDom(hud, collectPlayerViews(world));
-  paintBanner(bannerEl, ctxMatch.banner);
+  paintBanner(bannerEl, phase === "interlude" ? null : ctxMatch.banner);
 }

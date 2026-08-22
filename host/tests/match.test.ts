@@ -3,12 +3,11 @@ import {
   DOG_SHOW,
   FLY_AWAY_TIME,
   INTRO_DURATION,
-  PASS_INTERLUDE,
-  PERFECT_TIME,
   START_JINGLE,
   canShoot,
   chooseMode,
   consumeShot,
+  continueMatch,
   createMatch,
   enterTitle,
   matchContext,
@@ -159,7 +158,7 @@ describe("match", () => {
     expect(cues).toContainEqual({ type: "sfx", name: "gameover" });
   });
 
-  it("awards a perfect bonus and advances after a clean round", () => {
+  it("awards a perfect bonus and waits for CONTINUE", () => {
     const m = startWaveA();
     for (let i = 0; i < 10; i++) recordHit(m, 500);
     expect(matchContext(m).score).toBe(5000);
@@ -168,11 +167,17 @@ describe("match", () => {
     expect(matchContext(m).banner).toBe("PERFECT");
     expect(matchPhase(m)).toBe("interlude");
     expect(cues).toContainEqual({ type: "perfect", bonus: 10000 });
+    expect(cues).toContainEqual({ type: "roundSplash" });
     expect(matchContext(m).score).toBe(15000);
-    tickMatch(m, PERFECT_TIME + 0.01, none);
+    expect(matchContext(m).roundStartScore).toBe(0);
+    tickMatch(m, 8, none);
+    expect(matchPhase(m)).toBe("interlude");
+    const next = continueMatch(m);
     expect(matchPhase(m)).toBe("wave");
     expect(matchContext(m).round).toBe(2);
+    expect(matchContext(m).roundStartScore).toBe(15000);
     expect(matchContext(m).resolved).toBe(0);
+    expect(next).toContainEqual({ type: "spawnWave", count: 1 });
   });
 
   it("plays count and clear when a round is passed without a perfect", () => {
@@ -184,9 +189,15 @@ describe("match", () => {
     expect(matchPhase(m)).toBe("interlude");
     expect(cues).toContainEqual({ type: "sfx", name: "count" });
     expect(cues).toContainEqual({ type: "sfx", name: "clear" });
-    tickMatch(m, PASS_INTERLUDE + 0.01, none);
+    expect(cues).toContainEqual({ type: "roundSplash" });
+    expect(matchContext(m).score).toBe(3000);
+    expect(matchContext(m).roundStartScore).toBe(0);
+    tickMatch(m, 8, none);
+    expect(matchPhase(m)).toBe("interlude");
+    continueMatch(m);
     expect(matchPhase(m)).toBe("wave");
     expect(matchContext(m).round).toBe(2);
+    expect(matchContext(m).roundStartScore).toBe(3000);
   });
 
   it("allows a title or game-over shot without consuming wave ammo", () => {

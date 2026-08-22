@@ -20,6 +20,10 @@ import {
 const statusEl = document.getElementById("status")!;
 const hintEl = document.getElementById("hint")!;
 const triggerBtn = document.getElementById("trigger") as HTMLButtonElement;
+const shareEl = document.getElementById("share-card")!;
+const shareImg = document.getElementById("share-card-img") as HTMLImageElement;
+const shareSend = document.getElementById("share-card-send") as HTMLButtonElement;
+const shareDismiss = document.getElementById("share-card-dismiss") as HTMLButtonElement;
 
 const params = new URLSearchParams(location.search);
 const pathSession = location.pathname.match(/\/c\/([a-z]{2,4})\/?$/i)?.[1]?.toLowerCase();
@@ -30,6 +34,7 @@ const USE_TOUCH = "ontouchstart" in window;
 let wakeLock: WakeLockSentinel | null = null;
 let fireId: number | null = null;
 let settleTimer = 0;
+let shareBlob: Blob | null = null;
 const contacts = new ContactMap();
 const actor = createController();
 
@@ -62,6 +67,9 @@ const session = new ControllerSession(sendStub, {
     }
     if (msg.type === "ammo") {
       actor.send({ type: "AMMO", shots: msg.shots });
+    }
+    if (msg.type === "share_card") {
+      showShareCard(msg.mime, msg.data);
     }
   },
   onError: (m) => actor.send({ type: "STATUS", text: m }),
@@ -297,6 +305,60 @@ triggerBtn.addEventListener("pointerdown", onPointerDown);
 triggerBtn.addEventListener("pointermove", onPointerMove);
 triggerBtn.addEventListener("pointerup", onPointerUp);
 triggerBtn.addEventListener("pointercancel", onPointerUp);
+
+function decodeBase64(data: string): ArrayBuffer {
+  const bin = atob(data);
+  const out = new ArrayBuffer(bin.length);
+  const view = new Uint8Array(out);
+  for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function showShareCard(mime: string, data: string): void {
+  const blob = new Blob([decodeBase64(data)], { type: mime || "image/png" });
+  const prev = shareImg.dataset.url;
+  if (prev) URL.revokeObjectURL(prev);
+  const url = URL.createObjectURL(blob);
+  shareImg.dataset.url = url;
+  shareImg.src = url;
+  shareBlob = blob;
+  shareEl.classList.remove("hidden");
+}
+
+function hideShareCard(): void {
+  shareEl.classList.add("hidden");
+}
+
+const SHARE_TITLE = "Think you can beat my Ducks Game score?";
+const SHARE_TEXT =
+  "I just played Ducks Game on the TV. Grab a phone, scan the QR, and try to top this — ducks.game";
+const SHARE_URL = "https://ducks.game";
+
+async function shareToSocial(): Promise<void> {
+  if (!shareBlob || !navigator.share) return;
+  const ext = shareBlob.type.includes("jpeg") ? "jpg" : "png";
+  const file = new File([shareBlob], `ducks-game-round.${ext}`, {
+    type: shareBlob.type,
+  });
+  const payloads: ShareData[] = [
+    { files: [file], title: SHARE_TITLE, text: SHARE_TEXT, url: SHARE_URL },
+    { files: [file], title: SHARE_TITLE, text: SHARE_TEXT },
+    { files: [file], title: SHARE_TITLE },
+  ];
+  for (const data of payloads) {
+    if (navigator.canShare && !navigator.canShare(data)) continue;
+    try {
+      await navigator.share(data);
+      return;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+    }
+  }
+}
+
+shareImg.addEventListener("click", () => void shareToSocial());
+shareSend.addEventListener("click", () => void shareToSocial());
+shareDismiss.addEventListener("click", () => hideShareCard());
 
 const swallow = (ev: Event) => ev.preventDefault();
 for (const type of [

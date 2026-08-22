@@ -57,7 +57,7 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  z-index: 7;
+  z-index: 9;
 }
 
 .crosshair {
@@ -227,10 +227,6 @@ body {
   text-align: center;
 }
 
-#scoreboard {
-  display: none;
-}
-
 #debug {
   position: absolute;
   right: 12px;
@@ -350,7 +346,13 @@ html:not(.debug-ui) #debug {
 #app.calibrating #play-hint,
 #app.calibrating #toggle-debug,
 #app.calibrating #crosshairs,
-#app.calibrating #calib-result {
+#app.calibrating #calib-result,
+#app.calibrating #round-splash,
+#app.calibrating #game-banner {
+  visibility: hidden;
+}
+
+#app:has(#round-splash:not(.hidden)) #play-hint {
   visibility: hidden;
 }
 
@@ -613,6 +615,74 @@ html:not(.debug-ui) #debug {
   text-shadow: 4px 4px 0 #000;
   pointer-events: none;
   letter-spacing: 0.06em;
+}
+
+#round-splash {
+  --hud-icon-duck: clamp(14px, 2.8vh, 22px);
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  pointer-events: auto;
+  image-rendering: pixelated;
+}
+
+#round-splash-card {
+  position: relative;
+  width: min(64vmin, 480px);
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: var(--sky);
+  box-shadow: 8px 8px 0 #000;
+  box-sizing: border-box;
+  cursor: pointer;
+  transition: box-shadow 80ms linear, transform 80ms linear;
+}
+
+#round-splash-card:hover,
+#round-splash-card.hot {
+  box-shadow: 8px 8px 0 #000, 0 0 0 8px #fcb400, 0 0 28px #fcb400;
+  transform: scale(1.03);
+}
+
+#round-splash-scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+  pointer-events: none;
+}
+
+#round-splash-continue {
+  pointer-events: auto;
+  width: min(64vmin, 480px);
+  min-height: 88px;
+  padding: 24px 28px;
+  border-radius: 999px;
+  border: 5px solid #fcfcfc;
+  background: #0058f8;
+  color: #fcfcfc;
+  font-family: inherit;
+  font-size: clamp(18px, 4vmin, 28px);
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  box-shadow: inset -5px -5px 0 #003888, 0 8px 0 #001848;
+  transition: background 80ms linear, border-color 80ms linear, box-shadow 80ms linear, transform 80ms linear;
+}
+
+#round-splash-continue:hover,
+#round-splash-continue.hot {
+  background: #3cbcfc;
+  border-color: var(--yellow);
+  box-shadow: inset -5px -5px 0 #0058f8, 0 8px 0 #001848, 0 0 0 8px #fcb400, 0 0 24px #fcb400;
+  transform: translateY(2px) scale(1.04);
 }
 
 .hud-score-digits {

@@ -44,6 +44,7 @@ export type HostToControllerMessage =
   | { type: "calib_cancel" }
   | { type: "status"; text: string }
   | { type: "ammo"; shots: number }
+  | { type: "share_card"; mime: string; data: string }
   | ClockPing
   | ClockPong;
 
