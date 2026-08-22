@@ -14,21 +14,21 @@ npm install
 ngrok config add-authtoken YOUR_TOKEN   # once — from https://dashboard.ngrok.com/get-started/your-authtoken
 ```
 
-## Open on a TV (short link)
+## Open on a TV
 
 ```bash
 npm start
 # or: npm run tv
 ```
 
-This builds everything into one gateway, opens a single HTTPS tunnel, and prints a **short link** (is.gd) you can type on the TV browser:
+This builds everything into one gateway, opens a single ngrok HTTPS tunnel, and prints the public URL:
 
 ```
-OPEN ON TV (short link):
-https://is.gd/……
+OPEN ON TV:
+https://….ngrok-free.app
 ```
 
-1. Open that short URL on the TV  
+1. Open that URL on the TV  
 2. Scan the on-screen QR with your phone  
 3. Enable motion → calibrate → play  
 

@@ -98,58 +98,14 @@ function pickHttpsTunnel(tunnels) {
   return https?.public_url ?? tunnels[0]?.public_url ?? null;
 }
 
-async function shortenUrl(longUrl) {
-  const encoded = encodeURIComponent(longUrl);
-  const attempts = [
-    async () => {
-      const res = await fetch(
-        `https://tinyurl.com/api-create.php?url=${encoded}`,
-      );
-      if (!res.ok) return null;
-      const text = (await res.text()).trim();
-      return text.startsWith("http") ? text : null;
-    },
-    async () => {
-      const res = await fetch("https://cleanuri.com/api/v1/shorten", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `url=${encoded}`,
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      const text = String(data.result_url ?? "").trim();
-      return text.startsWith("http") ? text : null;
-    },
-    async () => {
-      const res = await fetch(
-        `https://is.gd/create.php?format=simple&url=${encoded}`,
-      );
-      if (!res.ok) return null;
-      const text = (await res.text()).trim();
-      return text.startsWith("http") ? text : null;
-    },
-  ];
-
-  for (const attempt of attempts) {
-    try {
-      const short = await attempt();
-      if (short) return short;
-    } catch {
-      /* try next */
-    }
-  }
-  return null;
-}
-
-function printTvBanner(shortUrl, tvUrl) {
+function printTvBanner(tvUrl) {
   const line = "═".repeat(52);
   console.log(`
 ${line}
-  OPEN ON TV — short link:
+  OPEN ON TV:
 
-      ${shortUrl}
+      ${tvUrl}
 
-  Full:       ${tvUrl}
   Controller: ${tvUrl}/c/
   Also saved: ${urlFile}
   Inspector:  http://127.0.0.1:4040
@@ -244,26 +200,25 @@ if (!publicUrl) {
 }
 
 const tvUrl = publicUrl.replace(/\/$/, "");
-const shortUrl = (await shortenUrl(tvUrl)) ?? tvUrl;
 
 writeFileSync(
   urlFile,
-  `SHORT=${shortUrl}\nFULL=${tvUrl}\nCONTROLLER=${tvUrl}/c/\n`,
+  `FULL=${tvUrl}\nCONTROLLER=${tvUrl}/c/\n`,
   "utf8",
 );
 
-printTvBanner(shortUrl, tvUrl);
+printTvBanner(tvUrl);
 
 try {
   if (process.platform === "darwin") {
-    spawn("open", [shortUrl], { stdio: "ignore" });
+    spawn("open", [tvUrl], { stdio: "ignore" });
   }
 } catch {
   /* ignore */
 }
 
 setInterval(() => {
-  printTvBanner(shortUrl, tvUrl);
+  printTvBanner(tvUrl);
 }, 60_000);
 
 await new Promise(() => {});
